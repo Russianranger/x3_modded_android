@@ -1,0 +1,144 @@
+{
+  "format": 3,
+  "name": "X3AP + LxXRM (AYN Thor / Xbox layout)",
+  "keymap": "x3ap-keymap.json",
+  "deadzone": 0.2,
+  "sensitivity": 700,
+  "notes": [
+    "Format 3 = TRASC format 2 plus action IDs, layer kinds and app actions. tools/build_controls.py compiles it to TRASC format 2 for the existing ControllerInput engine and generates the overlay data and cheat sheet.",
+    "Base layers are switched with Select (hold) + D-pad. Hold layers are only active while their button is held.",
+    "Layer 1 must bind all 24 sources. In other layers, any source left out inherits Layer 1's binding.",
+    "App actions: app.hold:<layer>, app.goto:<layer>, app.next, app.prev, app.help_toggle, app.text_input, app.client_menu, none."
+  ],
+  "layers": [
+    {
+      "name": "Flight",
+      "kind": "base",
+      "blurb": "Dogfighting and general flying",
+      "bindings": {
+        "LeftUp": "flight.pitch_down",
+        "LeftDown": "flight.pitch_up",
+        "LeftLeft": "flight.yaw_left",
+        "LeftRight": "flight.yaw_right",
+        "RightUp": "input.pointer_up",
+        "RightDown": "input.pointer_down",
+        "RightLeft": "input.pointer_left",
+        "RightRight": "input.pointer_right",
+        "DpadUp": "flight.accelerate",
+        "DpadDown": "flight.decelerate",
+        "DpadLeft": "flight.roll_left",
+        "DpadRight": "flight.roll_right",
+        "A": "ui.quick_menu",
+        "B": "ui.back",
+        "X": "flight.stop",
+        "Y": "target.nearest_enemy",
+        "L1": "target.prev",
+        "R1": "target.next",
+        "L2": "app.hold:Combat",
+        "R2": "weapons.fire",
+        "L3": "flight.boost",
+        "R3": "input.mouse_mode",
+        "Start": "ui.main_menu",
+        "Select": "app.hold:System"
+      }
+    },
+    {
+      "name": "Navigate",
+      "kind": "base",
+      "blurb": "Travel, docking, maps and views",
+      "bindings": {
+        "X": "nav.seta",
+        "Y": "nav.dock",
+        "L1": "map.sector",
+        "R1": "map.universe",
+        "DpadUp": "nav.autopilot",
+        "DpadDown": "nav.jumpdrive",
+        "DpadLeft": "view.cockpit",
+        "DpadRight": "view.external",
+        "L3": "view.target"
+      }
+    },
+    {
+      "name": "Menus",
+      "kind": "base",
+      "blurb": "Trading, station and ship menus",
+      "bindings": {
+        "DpadUp": "ui.arrow_up",
+        "DpadDown": "ui.arrow_down",
+        "DpadLeft": "ui.arrow_left",
+        "DpadRight": "ui.arrow_right",
+        "X": "ui.fill_selection",
+        "Y": "ui.empty_selection",
+        "L1": "input.wheel_up",
+        "R1": "input.wheel_down",
+        "R2": "input.click",
+        "L3": "ui.close_all"
+      }
+    },
+    {
+      "name": "Command",
+      "kind": "base",
+      "blurb": "Fleet, empire and script hotkeys",
+      "bindings": {
+        "X": "cmd.console",
+        "Y": "cmd.comms",
+        "L1": "info.property",
+        "R1": "info.player",
+        "DpadUp": "script.1",
+        "DpadRight": "script.2",
+        "DpadDown": "script.3",
+        "DpadLeft": "script.4",
+        "L3": "info.identify",
+        "R3": "info.ship_menu"
+      }
+    },
+    {
+      "name": "Combat",
+      "kind": "hold",
+      "held_by": "L2",
+      "blurb": "Hold LT: missiles, strafing, wing orders",
+      "bindings": {
+        "A": "weapons.missile_launch",
+        "B": "weapons.missile_cycle",
+        "X": "weapons.auto_target",
+        "Y": "target.track",
+        "L1": "target.prev_enemy",
+        "R1": "target.next_enemy",
+        "DpadUp": "weapons.group_1",
+        "DpadRight": "weapons.group_2",
+        "DpadDown": "weapons.group_3",
+        "DpadLeft": "weapons.group_4",
+        "RightUp": "flight.strafe_up",
+        "RightDown": "flight.strafe_down",
+        "RightLeft": "flight.strafe_left",
+        "RightRight": "flight.strafe_right",
+        "L3": "wing.attack",
+        "R3": "wing.protect",
+        "Start": "drones.attack"
+      }
+    },
+    {
+      "name": "System",
+      "kind": "hold",
+      "held_by": "Select",
+      "overlay": "peek",
+      "blurb": "Hold Select: switch layers, save, pause, help",
+      "bindings": {
+        "DpadUp": "app.goto:Flight",
+        "DpadRight": "app.goto:Navigate",
+        "DpadDown": "app.goto:Menus",
+        "DpadLeft": "app.goto:Command",
+        "Start": "app.help_toggle",
+        "A": "game.pause",
+        "B": "app.client_menu",
+        "X": "game.save",
+        "Y": "app.text_input",
+        "L1": "game.options",
+        "R1": "game.screenshot",
+        "R2": "view.hud_toggle",
+        "L3": "cargo.freight",
+        "R3": "cargo.door"
+      }
+    }
+  ]
+}

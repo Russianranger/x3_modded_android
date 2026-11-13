@@ -1,0 +1,28 @@
+# Box64 per-process settings for X3. Install as $HOME/.box64rc inside the rootfs (setting
+# BOX64_RCFILE instead would disable Box64's own system rc file). Section names are matched
+# case-insensitively against the process name.
+#
+# These are STARTING POINTS, not tuned values. Change one thing at a time and compare the same
+# save / same loading screen. Every option is documented in box64/docs/USAGE.md.
+
+# Route B: Windows X3AP.exe under Wine WoW64.
+[X3AP.exe]
+# Bigger translation blocks; Box64's docs call level 3 "useful for Wine programs" and its own rc
+# file uses it for other old 32-bit D3D games.
+BOX64_DYNAREC_BIGBLOCK=3
+# If you see random crashes or corrupted state in long sessions, try these one at a time:
+#BOX64_DYNAREC_STRONGMEM=1
+#BOX64_DYNAREC_SAFEFLAGS=2
+#BOX64_DYNAREC_CALLRET=0
+
+# Route A: Egosoft's native Linux binary (32-bit; needs Box64 built with -DBOX32=ON).
+[X3AP_main]
+#BOX64_DYNAREC_STRONGMEM=1
+#BOX64_DYNAREC_SAFEFLAGS=2
+
+[X3TC_main]
+#BOX64_DYNAREC_STRONGMEM=1
+
+# Egosoft's config launchers are tiny; favour safety.
+[X3AP_config]
+BOX64_DYNAREC_SAFEFLAGS=2
