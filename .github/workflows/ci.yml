@@ -67,7 +67,9 @@ jobs:
           grep -E '^e: |error:|[.]java:[0-9]+: error' build.log | head -40 | sed 's/^/::error::/' || true
       - name: Android lint (informational)
         continue-on-error: true
-        run: gradle --no-daemon :app:lintDebug
+        run: |
+          gradle --no-daemon :app:lintDebug
+          cat app/build/reports/lint-results-debug.txt
       - name: Verify the APK carries the pinned preview certificate
         run: |
           apk=app/build/outputs/apk/debug/app-debug.apk

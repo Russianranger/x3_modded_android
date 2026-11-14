@@ -35,7 +35,7 @@ android {
             jniLibs.srcDirs += ['../payload/out/jniLibs']
         }
     }
-    lint { abortOnError false; checkReleaseBuilds false; textReport true; textOutput file('stdout') }
+    lint { abortOnError false; checkReleaseBuilds false; textReport true }
 }
 
 // Python supervisor and generated controller data travel as assets.
