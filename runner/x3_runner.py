@@ -73,6 +73,20 @@ GAME_EXIT_SAMPLES = 2      # consecutive 10 s samples without the game after it 
 WINE_PROCESS = re.compile(r'(?:^wineserver$|\.exe$)', re.I)
 
 
+def dxvk_configuration(request):
+    """DXVK_CONFIG for X3. Without vsync, DXVK presents IMMEDIATE and the frame cap paces the game.
+
+    Third Thor run (0.1.3): X3 requests vsync, so DXVK 2.5.3 switches to FIFO. In FIFO it waits for
+    every frame with vkWaitForPresentKHR(..., UINT64_MAX), and on this path (Wine X11 surface ->
+    Mesa sw WSI -> Xtigervnc) that wait never returns. After the first frames the game blocks for
+    good: a black screen with every X3 and DXVK thread asleep. DXVK skips that wait for IMMEDIATE.
+    TRASC's vulkan-probe passed because it never waits for a present.
+    """
+    options = [] if request.get('vsync', False) else ['d3d9.presentInterval = 0']
+    options.append('d3d9.maxFrameRate = %d' % request.get('display_fps', 60))   # nothing above the frame bridge rate is seen
+    return '; '.join(options)
+
+
 def fatal_launch_error(log, game=False):
     missing = re.search(r'^wine: Call from \S+ to unimplemented function ([\w.]+?)\.(\w+), aborting', log, re.M)
     if missing:
@@ -127,6 +141,8 @@ class WineLog:
                 if re.search(r'Loaded L".*\\+d3d9\.dll".*: native\s*$', line, re.I):
                     self.fields['native_d3d9_loaded'] = True
                 if re.search(r'DXVK: v?2\.5\.3\b', line): self.fields['dxvk_loaded'] = '2.5.3'
+                mode = re.search(r'Present mode: (VK_PRESENT_MODE_\w+)', line)
+                if mode: self.fields['dxvk_present_mode'] = mode[1]
                 if re.search(r'Loaded L".*\\+dsound\.dll".*: (builtin|native)\s*$', line, re.I):
                     self.fields['dsound_loaded'] = re.search(r': (builtin|native)\s*$', line)[1]
                 if re.search(r':(err|warn):dsound', line): self.fields['dsound_errors'] += 1
@@ -256,7 +272,7 @@ def validate_request(request, game=GAME):
     if request.get('cpu_affinity', 'available') not in ('available', 'game'): raise ValueError('Unsupported CPU affinity')
     if request.get('runtime_mode', 'auto') not in ('auto', 'compatibility'): raise ValueError('Unsupported runtime mode')
     client_presentation.options(request)
-    for key in ('audio', 'dxvk_hud', 'diagnostic_logging', 'sound_diagnostics'):
+    for key in ('audio', 'dxvk_hud', 'diagnostic_logging', 'sound_diagnostics', 'vsync'):
         if not isinstance(request.get(key, False), bool): raise ValueError('Invalid option: ' + key)
     arguments = request.get('arguments', [])
     if (not isinstance(arguments, list) or len(arguments) > 32
@@ -326,6 +342,7 @@ class Supervisor:
             self.status['turnip_driver_requested'] = version
             client_vulkan.configure_environment(self.env, HERE, SESSION, PREFIX, version)
             self.env['DXVK_HUD'] = 'devinfo,fps,compiler' if request.get('dxvk_hud', True) else '0'
+            self.env['DXVK_CONFIG'] = self.status['dxvk_configuration'] = dxvk_configuration(request)
         else:
             self.env['WINEDLLOVERRIDES'] += ';d3d9=b'
         if request.get('audio', True): client_audio.configure_environment(self.env, SESSION)

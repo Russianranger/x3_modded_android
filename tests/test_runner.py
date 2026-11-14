@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "runner"))
 
 import client_audio  # noqa: E402
 import pe_info  # noqa: E402
+import client_metrics  # noqa: E402
 import x3_runner  # noqa: E402
 
 
@@ -179,6 +180,31 @@ class FirstDeviceRunTests(unittest.TestCase):
         self.assertIn("Box64 cannot run the x86 instruction 66 0F 01 E0 A8 04", message)
         page_fault = "wine: Unhandled page fault on read access to 00000000 at address 004F1234 (thread 0144), starting debugger...\n"
         self.assertNotIn("Box64", x3_runner.fatal_launch_error(log.splitlines()[0] + "\n" + page_fault, game=True))
+
+    def test_dxvk_stays_off_fifo_unless_vsync_is_requested(self):
+        # Third Thor run (0.1.3): FIFO + vkWaitForPresentKHR never returned -> black screen.
+        default = x3_runner.dxvk_configuration({"display_fps": 60})
+        self.assertEqual(default, "d3d9.presentInterval = 0; d3d9.maxFrameRate = 60")
+        self.assertEqual(x3_runner.dxvk_configuration({"display_fps": 30, "vsync": True}), "d3d9.maxFrameRate = 30")
+        request = dict(mode="game", program="X3AP.exe", resolution="1280x720", vsync="yes")
+        with self.assertRaisesRegex(ValueError, "vsync"):
+            x3_runner.validate_request(request)
+
+    def test_present_mode_is_recorded(self):
+        log = x3_runner.WineLog(Path(tempfile.gettempdir()) / "unused.log", game=True)
+        log.observe(b"info:    Present mode: VK_PRESENT_MODE_IMMEDIATE_KHR (dynamic: yes)\n"
+                    b"info:    Present mode: VK_PRESENT_MODE_FIFO_KHR (dynamic: yes)\n")
+        self.assertEqual(log.snapshot()[0]["dxvk_present_mode"], "VK_PRESENT_MODE_FIFO_KHR")
+
+    def test_sleeping_threads_report_where_they_wait(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = Path(tmp)
+            (task / "wchan").write_text("futex_wait_queue")
+            (task / "syscall").write_text("98 0x7f00 0x80 0x0 0x0 0x0 0x0 0x7ffd 0x7f12\n")
+            self.assertEqual(client_metrics.blocked_in(task), {"wchan": "futex_wait_queue", "syscall": 98})
+            (task / "wchan").write_text("0")
+            (task / "syscall").unlink()
+            self.assertEqual(client_metrics.blocked_in(task), {})
 
     def test_codec_that_needs_gstreamer_is_disabled(self):
         overrides = {}

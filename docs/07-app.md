@@ -215,3 +215,33 @@ not recognise as an error, and every Wine process exited 10 s later.
   bytes from the game.
 - The runner names any "Unhandled …" crash, including the x86 instruction Box64 could not run.
 - The runner ends the session with an error when Wine shuts down before the game window appears.
+
+### 14 November 2026, AYN Thor, build 0.1.3
+
+**What worked:**
+
+- The patched Box64 passed the `smsw` check.
+- X3's launcher opened.
+- After **Start**, DXVK built the 1280×720 fullscreen device.
+
+**Result:** a black screen. After the first frame, every X3 and DXVK thread was asleep, using no
+CPU, until the session was stopped.
+
+**Cause:**
+
+- The game asks for vsync, so DXVK 2.5.3 switched the swapchain to `VK_PRESENT_MODE_FIFO_KHR`.
+- In FIFO mode, DXVK's `dxvk-frame` thread waits for each frame with
+  `vkWaitForPresentKHR(..., UINT64_MAX)`. On this display path (Wine X11 surface, Mesa software
+  WSI, Xtigervnc) that wait never returns.
+- The frame-latency limit then blocked the game thread.
+- In IMMEDIATE mode DXVK skips that wait. TRASC's `vulkan-probe` never waits for a present, so
+  it could not catch this.
+
+**Fixes in 0.1.4:**
+
+- `DXVK_CONFIG` sets `d3d9.presentInterval = 0`, which keeps DXVK in IMMEDIATE mode, and
+  `d3d9.maxFrameRate` set to the display rate (30 or 60), which replaces vsync's pacing.
+- `x3-state.json` records the configuration as `dxvk_configuration` and the chosen present mode as
+  `dxvk_present_mode`.
+- Thread samples now record each sleeping thread's kernel wait channel and syscall, when Android
+  allows reading them. A future hang will show what the threads are waiting on.

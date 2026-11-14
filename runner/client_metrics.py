@@ -10,6 +10,24 @@ from itertools import islice
 LAUNCH_ENV = 'X3_LAUNCH'
 
 
+def blocked_in(task):
+    """X3 addition: kernel wait channel and syscall number of a sleeping thread, when readable.
+
+    After the third Thor run (all X3 threads asleep, no log line saying why) this is what tells a
+    futex wait from a blocked pipe write or a poll on the X server. Optional: Android may hide both.
+    """
+    found = {}
+    try:
+        wchan = (task/'wchan').read_text()[:64].strip()
+        if wchan and wchan != '0': found['wchan'] = wchan
+    except OSError: pass
+    try:
+        number = (task/'syscall').read_text()[:256].split(maxsplit=1)[0]
+        if number.lstrip('-').isdecimal(): found['syscall'] = int(number)
+    except (OSError, IndexError): pass
+    return found
+
+
 def process_threads(root_pid, proc=Path('/proc'), launch_token=None, game_name='x3ap.exe'):
     """Never scan unrelated processes or log command lines / environments.
 
@@ -66,6 +84,7 @@ def process_threads(root_pid, proc=Path('/proc'), launch_token=None, game_name='
                     status = (task/'status').read_text()[:16384]
                     mask = re.search(r'^Cpus_allowed_list:\s*(.+)$', status, re.M)
                     if mask: entry['allowed_cpus'] = mask[1].strip()
+                if fields[0] in ('S', 'D'): entry.update(blocked_in(task))  # X3: where a hung thread waits
                 threads.append(entry)
                 if re.search(r'(?:^|:)gl\d+$', name): workers.append(entry)
                 if not launch_token:
