@@ -1,0 +1,38 @@
+diff --git a/src/emu/x64run660f.c b/src/emu/x64run660f.c
+index f91c48b3..e02c2fb7 100644
+--- a/src/emu/x64run660f.c
++++ b/src/emu/x64run660f.c
+@@ -123,6 +123,33 @@ uintptr_t Run660F(x64emu_t *emu, rex_t rex, uintptr_t addr)
+ 
+     switch(opcode) {
+ 
++    case 0x01:                      /* group 7 with operand-size prefix */
++        nextop = F8;
++        GETED(0);
++        if(MODREG)
++        switch(nextop) {
++            case 0xE0:
++            case 0xE1:
++            case 0xE2:
++            case 0xE3:
++            case 0xE4:
++            case 0xE5:
++            case 0xE6:
++            case 0xE7:  /* SMSW Ew (66 0F 01 /4, e.g. "smsw ax" in old FPU/SSE checks) */
++                ED->word[0] = (1<<0) | (1<<4); // same dummy CR0 as 0F 01 /4: only PE and ET set
++                break;
++            default:
++                return 0;
++        } else
++            switch((nextop>>3)&7) {
++                case 4:                 /* SMSW Ew */
++                    ED->word[0] = (1<<0) | (1<<4);
++                    break;
++                default:
++                    return 0;
++            }
++        break;
++
+     case 0x10:                      /* MOVUPD Gx, Ex */
+         nextop = F8;
+         GETEX(0);

@@ -170,6 +170,16 @@ class FirstDeviceRunTests(unittest.TestCase):
         log.observe(self.ABORT.encode())
         self.assertEqual(log.snapshot()[1], message)
 
+    def test_untranslated_instruction_is_named(self):
+        # Second Thor run (0.1.2): X3AP.exe's start-up "smsw ax" reached unpatched Box64.
+        log = ("[BOX64] 32707|0x4f9975: Unimplemented 32bits Opcode (00 01 74 5D) 66 0F 01 E0 A8 04 75 55 55 8B F4 81 EC 00 02\n"
+               "wine: Unhandled illegal instruction at address 004F9975 (thread 0144), starting debugger...\n")
+        message = x3_runner.fatal_launch_error(log, game=True)
+        self.assertIn("unhandled illegal instruction at 0x004F9975", message)
+        self.assertIn("Box64 cannot run the x86 instruction 66 0F 01 E0 A8 04", message)
+        page_fault = "wine: Unhandled page fault on read access to 00000000 at address 004F1234 (thread 0144), starting debugger...\n"
+        self.assertNotIn("Box64", x3_runner.fatal_launch_error(log.splitlines()[0] + "\n" + page_fault, game=True))
+
     def test_codec_that_needs_gstreamer_is_disabled(self):
         overrides = {}
         for group in x3_runner.DLL_OVERRIDES.split(";"):

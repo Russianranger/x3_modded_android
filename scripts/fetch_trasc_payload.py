@@ -64,10 +64,30 @@ def read_member(archive, member):
         return t.extractfile(info).read()
 
 
+def add_box64(directory, written):
+    """Bundle the patched Box64 built by scripts/build_box64.sh after checking it against its record."""
+    build = json.loads((directory / "box64-build.json").read_text())
+    data = (directory / "box64").read_bytes()
+    if hashlib.sha256(data).hexdigest() != build["sha256"]:
+        raise SystemExit("box64 does not match box64-build.json")
+    for patch in build["patches"]:
+        local = ROOT / "patches" / "box64" / patch["name"]
+        if sha256_file(local) != patch["sha256"]:
+            raise SystemExit("box64 was built with a different %s than this checkout" % patch["name"])
+    target = OUT / "assets" / "payload"
+    (target / "box64").write_bytes(data)
+    shutil.copyfile(directory / "box64-build.json", target / "box64-build.json")
+    written["assets/payload/box64"] = build["sha256"]
+    written["assets/payload/box64-build.json"] = sha256_file(target / "box64-build.json")
+    print("box64 ok: %s + %s" % (build["commit"][:12], ", ".join(p["name"] for p in build["patches"])))
+    return {k: build[k] for k in ("commit", "cmake", "patches", "sha256", "built_in")}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--cache", default=str(ROOT / "payload" / "cache"))
     ap.add_argument("--sources", help="copy the verified TRASC launcher-sources.tar.gz here")
+    ap.add_argument("--box64", help="directory from scripts/build_box64.sh (patched Box64 + box64-build.json)")
     args = ap.parse_args()
     lock = json.loads(LOCK.read_text())
     cache = Path(args.cache)
@@ -94,6 +114,8 @@ def main():
             raise SystemExit("cross-check failed: %s != %s" % (check["member"], check["equals"]))
     provenance = {"format": 1, "lock_sha256": sha256_file(LOCK), "files": written,
                   "sources": {k: {"url": v["url"], "sha256": v["sha256"]} for k, v in lock["sources"].items()}}
+    if args.box64:
+        provenance["box64"] = add_box64(Path(args.box64), written)
     (OUT / "assets" / "payload" / "payload-provenance.json").write_text(json.dumps(provenance, indent=1) + "\n")
     print("payload ok: %d files verified into %s" % (len(written), OUT.relative_to(ROOT)))
     if args.sources:

@@ -190,3 +190,28 @@ python3 -I -m unittest discover -s tests -v
 - The session ends by itself when X3 exits.
 - The right-stick mouse channel retries its connection. It had lost a start-up race and stayed off
   for the whole session.
+
+### 13 November 2026, AYN Thor, build 0.1.2
+
+**What worked:** the codec crash was gone. X3 got further, past DXVK device setup, DirectSound
+and DirectShow, and the right-stick input channel connected.
+
+**Result:** still a black screen.
+
+**Cause:** X3AP.exe stopped about 7 s in, at `0x4F9975`. Box64 reported:
+
+```text
+Unimplemented 32bits Opcode ... 66 0F 01 E0
+```
+
+That instruction is `smsw ax`, part of the game's CPU and FPU check at start-up. Box64 knew
+`smsw` but not this prefixed form. Wine then reported an "illegal instruction", which 0.1.2 did
+not recognise as an error, and every Wine process exited 10 s later.
+
+**Fixes in 0.1.3:**
+
+- The app ships a patched build of the runtime's own Box64 commit
+  ([patches/box64](../patches/box64/README.md)). It is tested in CI with the exact instruction
+  bytes from the game.
+- The runner names any "Unhandled …" crash, including the x86 instruction Box64 could not run.
+- The runner ends the session with an error when Wine shuts down before the game window appears.

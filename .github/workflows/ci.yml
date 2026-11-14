@@ -41,11 +41,37 @@ jobs:
       - name: Shell scripts parse
         run: bash -n runtime/launch-wine.sh runtime/launch-native.sh tools/trasc_check/run.sh
 
+  box64:
+    # TRASC's pinned Box64 plus patches/box64 (first: "66 0F 01 E0" smsw ax, X3AP.exe start-up check).
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reuse a build of the same commit, patches and recipe
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: box64-out
+          key: box64-2f130fab-${{ hashFiles('patches/box64/**', 'scripts/build_box64.sh', 'tests/box64/**') }}
+      - name: Build and test patched Box64 (debian:bookworm-slim arm64, as the runtime)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p box64-out
+          docker run --rm -v "$PWD:/repo:ro" -v "$PWD/box64-out:/out" debian:bookworm-slim bash /repo/scripts/build_box64.sh /out
+      - run: cat box64-out/box64-build.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: box64
+          path: box64-out/
+
   apk:
-    needs: test
+    needs: [test, box64]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: box64
+          path: box64-out
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -64,7 +90,7 @@ jobs:
           path: payload/cache
           key: payload-${{ hashFiles('payload/trasc-payload.lock.json') }}
       - name: Assemble and verify the native payload
-        run: python3 -I scripts/fetch_trasc_payload.py
+        run: python3 -I scripts/fetch_trasc_payload.py --box64 box64-out
       - name: Build APK
         run: gradle --no-daemon :app:assembleDebug 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
       - name: Surface compiler errors as annotations
@@ -82,7 +108,7 @@ jobs:
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$apk" | tee apk-signing.txt
           actual=$(grep -oP 'Signer #1 certificate SHA-256 digest: \K[0-9a-f]+' apk-signing.txt)
           test "$actual" = "$(cat signing/x3-preview.sha256)"
-          unzip -l "$apk" | grep -E "lib/arm64-v8a/libproot.so|assets/payload/turnip.so|assets/runner/x3_runner.py|assets/controls/overlay-data.json"
+          unzip -l "$apk" | grep -E "lib/arm64-v8a/libproot.so|assets/payload/turnip.so|assets/payload/box64$|assets/runner/x3_runner.py|assets/controls/overlay-data.json"
       - name: Describe the build
         run: |
           apk=app/build/outputs/apk/debug/app-debug.apk
@@ -96,7 +122,8 @@ jobs:
                   "version_code": int(re.search(r"versionCode (\d+)", gradle).group(1)),
                   "application_id": "io.github.russianranger.x3",
                   "signing_certificate_sha256": pathlib.Path("signing/x3-preview.sha256").read_text().strip(),
-                  "payload": json.loads(pathlib.Path("payload/out/assets/payload/payload-provenance.json").read_text())["sources"]}
+                  "payload": json.loads(pathlib.Path("payload/out/assets/payload/payload-provenance.json").read_text())["sources"],
+                  "box64": json.loads(pathlib.Path("payload/out/assets/payload/payload-provenance.json").read_text()).get("box64")}
           pathlib.Path("build-info.json").write_text(json.dumps(info, indent=2) + "\n")
           PY
           cp "$apk" x3-modded-android-preview.apk

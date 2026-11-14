@@ -51,6 +51,7 @@ runner/                         Python supervisor run inside the rootfs (x3_runn
 payload/trasc-payload.lock.json SHA-256 pins for every TRASC binary the APK bundles
 scripts/fetch_trasc_payload.py  download + verify that payload into payload/out
 signing/                        public preview key (keeps updates installable over each other)
+patches/box64/                  fixes on top of the runtime's Box64 commit (built + tested in CI)
 tests/                          runner unit tests, X3 controller engine check, Java/Python PE cross-check
 controls/
   x3ap-keymap.json              action -> X3 key (edit when AP's keys differ)

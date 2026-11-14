@@ -19,6 +19,7 @@ copy of the APK you pass on.
 | `assets/payload/turnip.so`, `turnip-26.0.0.so` | Mesa 24.3.4 and 26.0.0 Turnip (Qualcomm KGSL), built from unmodified release source | MIT, plus the component notices in Mesa's source |
 | `assets/payload/dxvk-d3d9.dll`, `dxvk-d3d9-x64.dll` | [DXVK 2.5.3](https://github.com/doitsujin/dxvk/releases/tag/v2.5.3) `d3d9.dll`, x86 and x64. The x64 file is taken from the upstream release archive (SHA-256 `d8e6ef7d…ea1eb8`). | zlib |
 | `assets/payload/libasound_module_pcm_trasc.so` | TRASC ALSA PCM endpoint (feeds Android AudioTrack) | MIT |
+| `assets/payload/box64` | [Box64](https://github.com/ptitSeb/box64/tree/2f130fab1d6e1a4ee8a71dc60cfdfcc839ad192a) 0.4.4, the same commit as the runtime, with [`patches/box64`](patches/box64) applied, built by this repository's CI (`scripts/build_box64.sh`) | MIT |
 | `assets/payload/x11-frame-bridge`, `vulkan-probe` | TRASC frame/input helper and Vulkan preflight. The helper statically links libXdamage and libXtst; their notices are in `presentation-notices.txt`. | MIT / X11 |
 
 The app downloads TRASC's **client runtime** (`client-runtime-v1`, SHA-256

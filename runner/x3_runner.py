@@ -70,6 +70,7 @@ def archive_log(path, limit=WINE_LOG_LIMIT):
 DLL_OVERRIDES = 'winemenubuilder,mscoree,mshtml,winegstreamer,ir50_32='
 GAME_START_GRACE = 150     # seconds after launch before a missing game process is reported
 GAME_EXIT_SAMPLES = 2      # consecutive 10 s samples without the game after it was running
+WINE_PROCESS = re.compile(r'(?:^wineserver$|\.exe$)', re.I)
 
 
 def fatal_launch_error(log, game=False):
@@ -80,11 +81,19 @@ def fatal_launch_error(log, game=False):
         return (f'The program stopped: it called {module} {function}, which this Wine runtime does not provide'
                 + (' (the DLL is disabled or could not load)' if disabled else '') + '. Export Logs and attach x3-wine.log.')
     if game:
-        crash = re.search(r'^wine: Unhandled (page fault|exception)\b([^\r\n]{0,240})starting debugger', log, re.I | re.M)
+        # Any kind Wine reports: page fault, exception, illegal/privileged instruction, stack overflow...
+        crash = re.search(r'^wine: Unhandled ((?:page fault|exception|[a-z]+ instruction|stack overflow|division by zero|[a-z]+))\b'
+                          r'([^\r\n]{0,240})starting debugger', log, re.I | re.M)
         if crash:
             address = re.search(r'\bat address ((?:0x)?[0-9a-f]{1,16})\b', crash[2], re.I)
             location = ' at ' + (address[1] if address[1].lower().startswith('0x') else '0x' + address[1]) if address else ''
-            return 'The game crashed (unhandled ' + crash[1].lower() + location + '). Export Logs and check x3-wine.log.'
+            detail = ''
+            # Box64 names the x86 instruction it could not translate just before Wine reports it.
+            opcode = re.findall(r'Unimplemented (?:32bits )?Opcode \([0-9A-F ]+\) ((?:[0-9A-F]{2} ){1,6})', log)
+            if opcode and crash[1].lower() == 'illegal instruction':
+                detail = ': Box64 cannot run the x86 instruction ' + opcode[-1].strip()
+            return ('The game crashed (unhandled ' + crash[1].lower() + location + detail + '). '
+                    'Export Logs and check x3-wine.log.')
     match = re.search(r'wine: could not load kernel32\.dll, status ([0-9a-f]+)', log, re.I)
     if match:
         return 'Wine could not start its Windows loader (kernel32.dll, ' + match[1] + '). Reinstall the runtime and export Logs.'
@@ -451,6 +460,12 @@ class Supervisor:
             if binary.is_symlink() or not binary.is_file() or hashlib.sha256(binary.read_bytes()).hexdigest() != patch['sha256']:
                 raise RuntimeError('Bundled Wine server failed verification; reinstall the APK')
             self.update(wineserver_patch=patch['patch'])
+        if (HERE / 'box64-build.json').is_file():
+            build = json.loads((HERE / 'box64-build.json').read_text())
+            binary = Path(BOX64)
+            if not binary.is_file() or hashlib.sha256(binary.read_bytes()).hexdigest() != build['sha256']:
+                raise RuntimeError('Bundled Box64 failed verification; reinstall the APK')
+            self.update(box64_build={'commit': build['commit'], 'patches': [p['name'] for p in build['patches']]})
         native_log = LOGS / 'x3-proot.log'
         observed = False
         if native_log.is_file():
@@ -517,6 +532,13 @@ class Supervisor:
                             self.status['stop_reason'] = 'game_exited'
                             self.update(launcher_exit=launcher.poll(), **observed)
                             return
+                    elif not any(WINE_PROCESS.search(t['name']) for t in sample['threads']) and launcher.poll() is not None:
+                        # Every Wine process is gone (second Thor run: X3 died, wineserver followed
+                        # 10 s later) and no recognised error was logged.
+                        absent += 1
+                        if absent >= GAME_EXIT_SAMPLES:
+                            raise RuntimeError(f'Wine closed before {self.game_name} opened a window. '
+                                               'Export Logs and check x3-wine.log.')
                     elif time.monotonic() - launched > GAME_START_GRACE and 'warning' not in self.status:
                         self.status['warning'] = (f'{self.game_name} is not running {GAME_START_GRACE / 60:g} minutes after launch. '
                                                   'Stop the game and export logs (x3-wine.log shows why).')
