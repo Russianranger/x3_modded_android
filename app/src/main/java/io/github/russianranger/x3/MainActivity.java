@@ -27,7 +27,7 @@ public final class MainActivity extends Activity {
     private TextView statusView,runtimeView,gameView;
     private Spinner program,resolution,renderer,turnip,fps,cpu;
     private EditText arguments;
-    private CheckBox audio,hud,diagnostics,soundDiagnostics;
+    private CheckBox audio,hud,diagnostics,soundDiagnostics,skipArchives;
     private Button cancel;
     private volatile boolean operationRunning,cancelRequested;
     private volatile String operationStatus="";
@@ -59,12 +59,15 @@ public final class MainActivity extends Activity {
         button(gameRow,"Import X3 folder…",v->pick(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE),PICK_GAME));
         button(gameRow,"Sync changed files",v->sync());
         cancel=button(gameRow,"Cancel",v->{cancelRequested=true;operationStatus="Cancelling…";});
+        skipArchives=check(gameCard,"Leave out LxXRM installer archives (_DOWNLOADS folders, not needed once the mod is applied)",
+            prefs.getBoolean("skip_installer_archives",true));
+        skipArchives.setOnCheckedChangeListener((b,on)->prefs.edit().putBoolean("skip_installer_archives",on).apply());
 
         LinearLayout launchCard=card(root,"3 · Launch");
         label(launchCard,"Program (X3AP.exe plays; choose SETUP.bat or another tool to run it in Wine)");
         program=spinner(launchCard,Collections.singletonList("X3AP.exe"));
-        label(launchCard,"Arguments (try -skipintro)");
-        arguments=new EditText(this);arguments.setSingleLine(true);arguments.setTextColor(0xffe6edf3);arguments.setText(prefs.getString("arguments",""));launchCard.addView(arguments);
+        label(launchCard,"Arguments (-skipintro skips the intro movies)");
+        arguments=new EditText(this);arguments.setSingleLine(true);arguments.setTextColor(0xffe6edf3);arguments.setText(prefs.getString("arguments","-skipintro"));launchCard.addView(arguments);
         label(launchCard,"Resolution");resolution=spinner(launchCard,GameRuntime.RESOLUTIONS);
         label(launchCard,"Graphics");renderer=spinner(launchCard,Arrays.asList("Turnip + DXVK (Adreno GPU)","Software (WineD3D, slow)"));
         label(launchCard,"Turnip driver");turnip=spinner(launchCard,Arrays.asList("24.3.4","26.0.0"));
@@ -88,10 +91,10 @@ public final class MainActivity extends Activity {
         LinearLayout toolsRow2=row(tools);
         button(toolsRow2,"Export logs…",v->pick(new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/zip").putExtra(Intent.EXTRA_TITLE,"x3-logs-"+System.currentTimeMillis()+".zip"),EXPORT_LOGS));
         button(toolsRow2,"Reset Wine prefix",v->new AlertDialog.Builder(this).setTitle("Reset the Wine prefix?")
-            .setMessage("The current prefix (including X3 saves in Documents/Egosoft) is moved to a backup folder inside the app, not deleted. The next launch builds a fresh prefix.")
+            .setMessage("The current prefix is moved to a backup folder inside the app, not deleted, and the next launch builds a fresh one. X3 saves and settings (Documents/Egosoft) are kept: they are stored outside the prefix.")
             .setPositiveButton("Reset",(d,w)->operation("Resetting prefix",()->{File b=runtime.resetPrefix();operationStatus=b==null?"No prefix yet":"Prefix moved to "+b.getName();}))
             .setNegativeButton("Cancel",null).show());
-        TextView notes=text(tools,"Tips: untick EAX in X3's launcher window (most likely cause of silent audio under Wine). Steam's X3AP.exe needs Steam; use the NoSteam X3AP.exe that LxXRM installs. "
+        TextView notes=text(tools,"Tips: untick EAX in X3's launcher window (most likely cause of silent audio under Wine). Saves and settings are kept in app storage, separate from the prefix and the runtime. "
             +"The first launch builds the Wine prefix and DXVK caches, so it is slower than later ones. Hold Select in game for the controller help overlay.",0xff8b98a8,12);
         notes.setPadding(0,dp(8),0,0);
 
@@ -123,7 +126,8 @@ public final class MainActivity extends Activity {
         String tree=importRecord().optString("tree","");
         if(tree.isEmpty()){Toast.makeText(this,"Import the X3 folder first",Toast.LENGTH_SHORT).show();return;}
         Uri uri=Uri.parse(tree);
-        operation("Sync",()->{JSONObject r=GameImporter.run(this,uri,paths,true,importProgress());operationStatus="Sync finished: "+r.optLong("copied")+" files updated, "+r.optLong("skipped")+" unchanged";});
+        boolean skip=skipArchives.isChecked();
+        operation("Sync",()->{JSONObject r=GameImporter.run(this,uri,paths,true,skip,importProgress());operationStatus="Sync finished: "+r.optLong("copied")+" files updated, "+r.optLong("skipped")+" unchanged";});
     }
 
     private GameImporter.Progress importProgress(){return new GameImporter.Progress(){
@@ -175,7 +179,15 @@ public final class MainActivity extends Activity {
         if(paths.game.isDirectory()&&record.length()>0){
             StringBuilder text=new StringBuilder(String.format(Locale.ROOT,"Imported: %d files · %.1f GB · %s",record.optInt("files"),record.optLong("bytes")/1e9,record.optString("imported_utc")));
             if(!record.optBoolean("addon_folder"))text.append("\n⚠ No addon/ folder: Albion Prelude data may be missing.");
-            if(record.optBoolean("steam_api_dll"))text.append("\nsteam_api.dll present: if X3AP.exe exits immediately, it is the Steam build; use the NoSteam executable.");
+            JSONObject exe=record.optJSONObject("x3ap");
+            if(exe!=null&&exe.has("machine")){
+                text.append("\nX3AP.exe: ").append("i386".equals(exe.optString("machine"))?"32-bit":exe.optString("machine"))
+                    .append(exe.optBoolean("steam_api")?" · ⚠ Steam build (imports steam_api.dll): it needs the Steam client, which is not in the app. Use the NoSteam X3AP.exe."
+                        :" · NoSteam build ✓")
+                    .append(exe.optBoolean("large_address_aware")?" · 4 GB aware":" · 2 GB limit (not Large Address Aware)");
+            } else if(exe!=null&&exe.has("error"))text.append("\n⚠ X3AP.exe: ").append(exe.optString("error"));
+            org.json.JSONArray left=record.optJSONArray("skipped_folders");
+            if(left!=null&&left.length()>0){text.append("\nLeft out:");for(int i=0;i<left.length();i++)text.append(i==0?" ":", ").append(left.optString(i));}
             gameView.setText(text);
         } else gameView.setText("Not imported. Pick the folder on your device that contains X3AP.exe (the \"X3 Terran Conflict\" folder with addon/ inside). It is copied into app storage for speed.");
         String game=runtime.alive()?"Game running":runtime.status;
@@ -194,7 +206,8 @@ public final class MainActivity extends Activity {
         if(request==PICK_GAME){
             try{getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION);}catch(SecurityException ignored){}
             if(runtime.alive()){Toast.makeText(this,"Stop the game before importing",Toast.LENGTH_LONG).show();return;}
-            operation("Import",()->{JSONObject r=GameImporter.run(this,uri,paths,false,importProgress());operationStatus=String.format(Locale.ROOT,"Imported %d files (%.1f GB)",r.optInt("files"),r.optLong("bytes")/1e9);});
+            boolean skip=skipArchives.isChecked();
+            operation("Import",()->{JSONObject r=GameImporter.run(this,uri,paths,false,skip,importProgress());operationStatus=String.format(Locale.ROOT,"Imported %d files (%.1f GB)",r.optInt("files"),r.optLong("bytes")/1e9);});
         } else if(request==PICK_RUNTIME){
             operation("Runtime install",()->{try(InputStream in=getContentResolver().openInputStream(uri)){if(in==null)throw new IOException("Cannot read the selected file");RuntimeInstaller.installOffline(paths,in,this::progress);}});
         } else if(request==EXPORT_LOGS){

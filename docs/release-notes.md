@@ -13,8 +13,10 @@ controls.
    checked against its SHA-256.
 3. On the **Game files** card, choose **Import X3 folder**. Pick the folder that contains `X3AP.exe`,
    or its parent folder. The files are copied into app storage, which keeps them off slow shared
-   storage.
-4. Choose **Launch**. In X3's own settings, turn **EAX off**.
+   storage. LxXRM's `_DOWNLOADS` installer archives are left out by default. The card then shows
+   whether `X3AP.exe` is the NoSteam build.
+4. Choose **Launch**. In X3's own settings, turn **EAX off**. Saves and settings are kept in app
+   storage, outside the Wine prefix, so **Reset Wine prefix** and updates don't touch them.
 
 **Controls**
 

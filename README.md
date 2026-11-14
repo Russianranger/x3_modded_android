@@ -51,7 +51,7 @@ runner/                         Python supervisor run inside the rootfs (x3_runn
 payload/trasc-payload.lock.json SHA-256 pins for every TRASC binary the APK bundles
 scripts/fetch_trasc_payload.py  download + verify that payload into payload/out
 signing/                        public preview key (keeps updates installable over each other)
-tests/                          runner unit tests, X3 controller engine check
+tests/                          runner unit tests, X3 controller engine check, Java/Python PE cross-check
 controls/
   x3ap-keymap.json              action -> X3 key (edit when AP's keys differ)
   x3ap-lxxrm.profile.json       6-layer controller profile (format 3, action-based)
@@ -86,8 +86,9 @@ python3 -I tools/normalize_case.py "/path/to/copy" --only addon      # Route A o
 
 ## Next steps
 
-1. Install the preview APK on the Thor and import the game folder ([docs/07-app.md](docs/07-app.md)).
-2. Launch `X3AP.exe`. If it exits at once, switch to the NoSteam executable.
+1. Install the preview APK on the Thor. Import the game folder, which already has LxXRM and the
+   NoSteam `X3AP.exe` ([docs/07-app.md](docs/07-app.md)).
+2. Launch `X3AP.exe`.
 3. Turn EAX off, then export the logs from **Tools** and attach them to an issue.
 
 Those logs show where the time and the problems are. After that, the plan is a zero-copy display

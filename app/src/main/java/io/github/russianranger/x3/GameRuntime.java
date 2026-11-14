@@ -110,7 +110,7 @@ final class GameRuntime {
                 .put("runtime_mode",options.optString("runtime_mode","auto"))
                 .put("diagnostic_logging",options.optBoolean("diagnostic_logging",false))
                 .put("sound_diagnostics",options.optBoolean("sound_diagnostics",false));
-            transientPaths.prepare();paths.prefix.mkdirs();
+            transientPaths.prepare();paths.prefix.mkdirs();paths.saves.mkdirs();
             stageAssets();
             File run=transientPaths.run,tmp=transientPaths.tmp,root=paths.runtime;
             Files.write(new File(root,"etc/hosts").toPath(),"127.0.0.1 localhost\n::1 localhost\n".getBytes(StandardCharsets.UTF_8));
@@ -121,7 +121,7 @@ final class GameRuntime {
             List<String> command=new ArrayList<>(Arrays.asList(proot.getPath(),"--kill-on-exit","--sysvipc","-0","-r",root.getPath(),
                 "-b",new File(paths.backend,"wineserver").getPath()+":/opt/wine/bin/wineserver",
                 "-b","/dev","-b","/proc","-b","/sys",
-                "-b",paths.game.getPath()+":/game","-b",paths.prefix.getPath()+":/prefix","-b",run.getPath()+":/session",
+                "-b",paths.game.getPath()+":/game","-b",paths.prefix.getPath()+":/prefix","-b",paths.saves.getPath()+":/saves","-b",run.getPath()+":/session",
                 "-b",paths.logs.getPath()+":/logs","-b",paths.backend.getPath()+":/opt/x3","-b",tmp.getPath()+":/tmp",
                 "-w","/game","/usr/bin/env","-i","HOME=/root","USER=root","PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
                 "LANG=C.UTF-8","TMPDIR=/tmp","PYTHONUNBUFFERED=1","/usr/bin/python3","/opt/x3/x3_runner.py"));
@@ -176,7 +176,7 @@ final class GameRuntime {
         process=null;status="Game stopped";
     }
 
-    /** Move the prefix aside (saves live inside it) so the next launch builds a fresh one. */
+    /** Move the prefix aside so the next launch builds a fresh one. Saves stay in paths.saves. */
     synchronized File resetPrefix()throws IOException {
         if(alive()||busy)throw new IOException("Stop the game first");
         if(!paths.prefix.exists())return null;

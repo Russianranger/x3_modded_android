@@ -150,5 +150,62 @@ class AudioTests(unittest.TestCase):
         self.assertEqual(env["TRASC_AUDIO_SOCKET"], "/session/audio.sock")
 
 
+class SavesTests(unittest.TestCase):
+    """X3's Documents\\Egosoft must end up in /saves, whatever Wine did with Documents."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.prefix, self.saves, self.home = root / "prefix", root / "saves", root / "home"
+        self.users = self.prefix / "drive_c" / "users"
+        (self.users / "Public" / "Documents").mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_persist(self):
+        return x3_runner.persist_documents(self.prefix, self.saves)
+
+    def test_dangling_home_link_is_followed(self):
+        (self.users / "root").mkdir()
+        (self.users / "root" / "Documents").symlink_to(self.home / "Documents")
+        report = self.run_persist()
+        self.assertEqual(report["users"], ["root"])
+        entry = self.home / "Documents" / "Egosoft"
+        self.assertEqual(os.readlink(entry), str(self.saves / "Egosoft"))
+        (entry / "X3AP").mkdir()
+        self.assertTrue((self.saves / "Egosoft" / "X3AP").is_dir())
+        self.assertFalse((self.users / "Public" / "Documents" / "Egosoft").exists())
+
+    def test_existing_saves_move_and_relaunch_is_idempotent(self):
+        save = self.users / "root" / "Documents" / "Egosoft" / "X3AP" / "save" / "save_001.sav"
+        save.parent.mkdir(parents=True)
+        save.write_bytes(b"campaign")
+        report = self.run_persist()
+        self.assertEqual(report["migrated"], [{"user": "root", "to": str(self.saves / "Egosoft")}])
+        self.assertEqual((self.saves / "Egosoft" / "X3AP" / "save" / "save_001.sav").read_bytes(), b"campaign")
+        self.assertEqual(self.run_persist()["migrated"], [])
+        self.assertEqual(save.read_bytes(), b"campaign")
+
+    def test_never_overwrites_saves_already_kept(self):
+        kept = self.saves / "Egosoft" / "X3AP" / "save" / "save_001.sav"
+        kept.parent.mkdir(parents=True)
+        kept.write_bytes(b"kept")
+        stray = self.users / "root" / "Documents" / "Egosoft" / "X3AP" / "save" / "save_001.sav"
+        stray.parent.mkdir(parents=True)
+        stray.write_bytes(b"other")
+        report = self.run_persist()
+        moved = Path(report["migrated"][0]["to"])
+        self.assertTrue(moved.name.startswith("Egosoft-from-root-"))
+        self.assertEqual(kept.read_bytes(), b"kept")
+        self.assertEqual((moved / "X3AP" / "save" / "save_001.sav").read_bytes(), b"other")
+        self.assertEqual(stray.read_bytes(), b"kept")
+
+    def test_new_prefix_without_users(self):
+        report = x3_runner.persist_documents(Path(self.tmp.name, "empty"), self.saves)
+        self.assertEqual(report["users"], [])
+        self.assertTrue((self.saves / "Egosoft").is_dir())
+
+
 if __name__ == "__main__":
     unittest.main()

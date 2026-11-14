@@ -53,6 +53,14 @@ PRoot rootfs (TRASC client runtime)
      slow FUSE layer. Expect 10–15 GB with LxXRM.
    - After you change files on shared storage, tap **Sync changed files**. It copies only the files
      whose size or date changed.
+   - **Leave out LxXRM installer archives** is on by default. It skips any `_DOWNLOADS` folder:
+     `SETUP.bat` unpacks from those archives, and the game never reads them once the mod is applied.
+     That saves several GB and a lot of copy time. Turn it off only if you want to re-run `SETUP.bat`
+     in the app.
+   - After the import, the card reads `X3AP.exe` itself. It shows whether the exe is the NoSteam
+     build, which it judges from the exe's imports. A Steam install keeps `steam_api.dll` in the
+     folder even next to the NoSteam exe, so the folder alone doesn't tell. The card also shows
+     whether the exe is Large Address Aware.
 4. Launch the game:
    - Pick `X3AP.exe` and a resolution, then tap **Launch**.
    - The defaults are Turnip 24.3.4, the balanced CPU profile, `-skipintro` and a 1280×720 Wine
@@ -60,20 +68,32 @@ PRoot rootfs (TRASC client runtime)
    - The first launch creates the Wine prefix, so it takes longer than later ones.
 5. In X3's own settings, turn **EAX off**. Pick a resolution that matches the Wine desktop.
 
+### Saves and settings
+
+X3 keeps its saves and settings in `Documents\Egosoft\X3AP`. Before each launch, the runner
+links `Documents\Egosoft` inside the Wine prefix to the app folder `files/game/saves/Egosoft`,
+which the runtime sees as `/saves`. Saves therefore survive **Reset Wine prefix**, runtime updates
+and APK updates. Uninstalling the app deletes them.
+
+If the prefix already holds a real `Egosoft` folder, the runner moves it, never deletes it. It goes
+into `/saves/Egosoft` when that folder is empty. Otherwise it goes beside it as
+`Egosoft-from-<user>-<time>`. `x3-state.json` records what was linked or moved under `saves`.
+
 ### Applying LxXRM inside the app
 
-You can run LxXRM's installer in the app if your folder doesn't already have the mod:
+You can run LxXRM's installer in the app if your folder doesn't already have the mod. If it
+already has the mod, skip this section.
 
 1. Copy `LxXRM/` (with `_DOWNLOADS/`) into the game folder on the Thor.
-2. Tap **Sync changed files**.
+2. Untick **Leave out LxXRM installer archives**, then tap **Sync changed files**.
 3. In the program list, pick `LxXRM/SETUP.bat`. It runs in a `cmd` window inside the Wine desktop.
 
 The program list shows `.exe`, `.bat` and `.cmd` files in the game folder and one level down.
 `X3AP.exe` is always first.
 
-Steam's `X3AP.exe` imports `steam_api.dll`, and there is no Steam client inside the app. If the game
-exits right away, use the NoSteam `X3AP.exe` that LxXRM's setup installs (or Egosoft's own). The
-launcher and the runner both warn when they detect the Steam executable.
+Steam's `X3AP.exe` imports `steam_api.dll`, and there is no Steam client inside the app. Use the
+NoSteam `X3AP.exe`, either the one LxXRM's setup installs or Egosoft's own. The **Game files**
+card and the runner both warn when they detect the Steam executable.
 
 ## Controls
 

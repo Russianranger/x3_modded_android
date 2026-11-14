@@ -18,6 +18,9 @@ import java.util.*;
  *
  * Fresh import: copy into game/incoming, then swap with game/current (old copy removed only after
  * success). Sync: copy only files whose size or modification time changed; nothing is deleted.
+ *
+ * With skipInstallerArchives, folders named _DOWNLOADS are left out: they hold the archives LxXRM's
+ * SETUP.bat unpacks from, which the game never reads once the mod is applied (several GB).
  */
 final class GameImporter {
     interface Progress {void update(String text);boolean cancelled();}
@@ -25,16 +28,17 @@ final class GameImporter {
     private static final String[] COLUMNS={DocumentsContract.Document.COLUMN_DOCUMENT_ID,DocumentsContract.Document.COLUMN_DISPLAY_NAME,
         DocumentsContract.Document.COLUMN_MIME_TYPE,DocumentsContract.Document.COLUMN_SIZE,DocumentsContract.Document.COLUMN_LAST_MODIFIED};
     private static final int MAX_FILES=400000;
+    static final String INSTALLER_ARCHIVES="_DOWNLOADS";
     private GameImporter(){}
 
-    static JSONObject run(Context context,Uri tree,AppPaths paths,boolean sync,Progress progress)throws Exception {
+    static JSONObject run(Context context,Uri tree,AppPaths paths,boolean sync,boolean skipInstallerArchives,Progress progress)throws Exception {
         ContentResolver resolver=context.getContentResolver();
         String rootId=DocumentsContract.getTreeDocumentId(tree);
         progress.update("Looking for X3AP.exe…");
         String baseId=findGameFolder(resolver,tree,rootId);
         progress.update("Scanning game files…");
-        List<String> directories=new ArrayList<>();List<Entry> files=new ArrayList<>();
-        scan(resolver,tree,baseId,directories,files,progress);
+        List<String> directories=new ArrayList<>();List<Entry> files=new ArrayList<>();List<String> skippedFolders=new ArrayList<>();
+        scan(resolver,tree,baseId,directories,files,skipInstallerArchives,skippedFolders,progress);
         long total=0;for(Entry e:files)total+=e.size;
         File destination=sync?paths.game:paths.gameIncoming;
         if(sync&&!paths.game.isDirectory())throw new IOException("Import the game once before syncing changes");
@@ -69,11 +73,26 @@ final class GameImporter {
         }
         JSONObject record=new JSONObject().put("tree",tree.toString()).put("files",files.size()).put("bytes",total)
             .put("imported_utc",java.time.Instant.now().toString()).put("mode",sync?"sync":"fresh")
-            .put("copied",copied).put("skipped",skipped)
-            .put("steam_api_dll",new File(paths.game,"steam_api.dll").isFile()).put("addon_folder",new File(paths.game,"addon").isDirectory());
+            .put("copied",copied).put("skipped",skipped).put("skipped_folders",new org.json.JSONArray(skippedFolders))
+            .put("steam_api_dll",new File(paths.game,"steam_api.dll").isFile()).put("addon_folder",new File(paths.game,"addon").isDirectory())
+            .put("x3ap",executableFacts(paths.game));
         File recordFile=paths.importRecord();
         Files.write(recordFile.toPath(),record.toString(2).getBytes(StandardCharsets.UTF_8));
         return record;
+    }
+
+    /** What X3AP.exe itself imports decides Steam vs NoSteam (see PeInfo). */
+    static JSONObject executableFacts(File game)throws org.json.JSONException {
+        JSONObject facts=new JSONObject();
+        File exe=null;String[] names=game.list();
+        if(names!=null)for(String name:names)if(name.equalsIgnoreCase("x3ap.exe"))exe=new File(game,name);
+        if(exe==null||!exe.isFile())return facts.put("error","X3AP.exe not found");
+        try{
+            PeInfo.Info info=PeInfo.inspect(exe);
+            facts.put("machine",info.machine).put("large_address_aware",info.largeAddressAware).put("steam_api",info.steamApi)
+                .put("bytes",exe.length()).put("imports",new org.json.JSONArray(info.imports));
+        }catch(IOException e){facts.put("error",e.getMessage());}
+        return facts;
     }
 
     private static boolean unchanged(File file,Entry e){return file.isFile()&&file.length()==e.size&&(e.modified<=0||Math.abs(file.lastModified()-e.modified)<2000);}
@@ -110,7 +129,8 @@ final class GameImporter {
         return rows;
     }
 
-    private static void scan(ContentResolver resolver,Uri tree,String baseId,List<String> directories,List<Entry> files,Progress progress)throws IOException {
+    private static void scan(ContentResolver resolver,Uri tree,String baseId,List<String> directories,List<Entry> files,
+                             boolean skipInstallerArchives,List<String> skippedFolders,Progress progress)throws IOException {
         ArrayDeque<String[]> pending=new ArrayDeque<>();pending.add(new String[]{baseId,""});
         while(!pending.isEmpty()) {
             if(progress.cancelled())throw new InterruptedIOException("Import cancelled");
@@ -118,6 +138,7 @@ final class GameImporter {
             for(String[] row:list(resolver,tree,next[0])) {
                 if(!safeName(row[1]))throw new IOException("Unsupported file name in game folder: "+row[1]);
                 String path=next[1].isEmpty()?row[1]:next[1]+"/"+row[1];
+                if(isDirectory(row)&&skipInstallerArchives&&INSTALLER_ARCHIVES.equalsIgnoreCase(row[1])){skippedFolders.add(path);continue;}
                 if(isDirectory(row)){directories.add(path);pending.add(new String[]{row[0],path});}
                 else{files.add(new Entry(path,row[0],Long.parseLong(row[3]),Long.parseLong(row[4])));
                     if(files.size()>MAX_FILES)throw new IOException("Game folder has too many files");

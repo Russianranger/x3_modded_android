@@ -30,6 +30,12 @@ jobs:
           out=$(mktemp -d); p=app/src/main/java/io/github/russianranger/x3
           javac -d "$out" $p/ControllerInput.java $p/DisplayInput.java tests/java/X3ControllerCheck.java
           java -cp "$out" io.github.russianranger.x3.X3ControllerCheck controls/generated/x3app-layers.tsv
+      - name: Java and Python PE readers agree (NoSteam detection)
+        run: |
+          out=$(mktemp -d)
+          python3 -I tests/pe_fixtures.py "$out/fixtures"
+          javac -d "$out/classes" app/src/main/java/io/github/russianranger/x3/PeInfo.java tests/java/PeInfoCheck.java
+          java -cp "$out/classes" io.github.russianranger.x3.PeInfoCheck "$out/fixtures"
       - name: Format-2 export works on TRASC's own ControllerInput
         run: tools/trasc_check/run.sh trasc-server-android
       - name: Shell scripts parse

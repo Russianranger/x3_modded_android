@@ -5,7 +5,8 @@ display on a private socket, relative-input helper, Turnip/DXVK preflight, Wine 
 preparation, bounded Wine log capture, audio bridge setup, CPU-affinity repair, clean stop.
 Removed: everything EverQuest-specific (dinput8, camera/loading adapters, eqclient.ini, spells).
 Added: X3 program selection (game or any .exe/.bat in the game folder), PE checks (bitness,
-Large Address Aware, Steam API import), 64-bit DXVK, Egosoft's 'dsp0' audio device.
+Large Address Aware, Steam API import), 64-bit DXVK, Egosoft's 'dsp0' audio device, and saves kept
+outside the prefix and runtime (Documents\\Egosoft -> /saves/Egosoft).
 
 Interface with the Android app (unchanged contract from TRASC):
   /session/request.json   launch request written by GameRuntime.java
@@ -37,6 +38,7 @@ HERE = Path(__file__).resolve().parent
 SESSION = Path('/session')
 GAME = Path('/game')
 PREFIX = Path('/prefix')
+SAVES = Path('/saves')
 LOGS = Path('/logs')
 BOX64 = '/usr/local/bin/box64'
 WINE = '/opt/wine/bin/wine'
@@ -155,6 +157,53 @@ def prefix_diagnostics(prefix=PREFIX, wine=Path('/opt/wine')):
     return report
 
 
+def persist_documents(prefix=PREFIX, saves=SAVES):
+    """Point each Wine user's Documents\\Egosoft at /saves/Egosoft and return what was done.
+
+    X3 keeps saves and settings in Documents\\Egosoft\\X3AP. Wine may link Documents to
+    $HOME/Documents, which is inside the replaceable runtime image, and "Reset Wine prefix" moves the
+    whole prefix aside. Linking only the Egosoft entry to app storage keeps saves through both.
+    An existing real Egosoft folder is moved, never deleted: into /saves/Egosoft when that is empty,
+    otherwise beside it as Egosoft-from-<user>-<time>.
+    """
+    target = saves / 'Egosoft'
+    target.mkdir(parents=True, exist_ok=True)
+    report = {'target': str(target), 'users': [], 'migrated': []}
+    users = prefix / 'drive_c' / 'users'
+    if not users.is_dir():
+        return report
+    stamp = time.strftime('%Y%m%d-%H%M%S')
+    for user in sorted(users.iterdir()):
+        if user.name.lower() == 'public' or user.is_symlink() or not user.is_dir():
+            continue
+        documents = user / 'Documents'
+        if documents.is_symlink() and not documents.exists():
+            documents.resolve().mkdir(parents=True, exist_ok=True)   # dangling link into $HOME
+        elif not documents.exists():
+            documents.mkdir()
+        entry = documents / 'Egosoft'
+        if entry.is_symlink():
+            if os.readlink(entry) == str(target):
+                report['users'].append(user.name)
+                continue
+            entry.unlink()
+        elif entry.is_dir():
+            if any(target.iterdir()):
+                destination = saves / f'Egosoft-from-{user.name}-{stamp}'
+                shutil.move(str(entry), str(destination))
+            else:
+                destination = target
+                for child in list(entry.iterdir()):
+                    shutil.move(str(child), str(target / child.name))
+                entry.rmdir()
+            report['migrated'].append({'user': user.name, 'to': str(destination)})
+        elif entry.exists():
+            entry.rename(entry.with_name(f'Egosoft.moved-{stamp}'))
+        entry.symlink_to(target)
+        report['users'].append(user.name)
+    return report
+
+
 def program_path(relative, game=GAME):
     """Resolve a program inside the imported game folder; reject anything that could escape it."""
     if not isinstance(relative, str) or not relative or '\\' in relative or '\0' in relative or len(relative) > 512:
@@ -195,7 +244,7 @@ def validate_request(request, game=GAME):
         except (OSError, ValueError) as error: raise ValueError('Not a valid Windows program: ' + str(error))
         if details['machine'] not in ('i386', 'x86_64'): raise ValueError('Unsupported Windows program architecture: ' + details['machine'])
         info.update(machine=details['machine'], large_address_aware=details['large_address_aware'],
-                    steam_api=details['steam_api'], gui=details['gui'])
+                    steam_api=details['steam_api'], gui=details['gui'], imports=details['imports'][:64])
     return info
 
 
@@ -371,7 +420,7 @@ class Supervisor:
         self.update(renderer='WineD3D / ' + (match[1].strip() if match else 'unknown'), graphics_acceleration='software')
 
     def start(self):
-        for p in (SESSION, PREFIX, LOGS): p.mkdir(parents=True, exist_ok=True)
+        for p in (SESSION, PREFIX, LOGS, SAVES): p.mkdir(parents=True, exist_ok=True)
         info = validate_request(self.request)
         self.update(program_info=info)
         if info.get('steam_api'):
@@ -415,6 +464,7 @@ class Supervisor:
         self.update(display_ready=True)
         with self.timed('graphics_check'): self.check_graphics()
         self.prepare_prefix()
+        self.update(saves=persist_documents())
         if self.request.get('renderer', 'turnip') == 'turnip':
             self.update(dxvk_d3d9_sha256=client_vulkan.install_d3d9(HERE, PREFIX, GAME))
         devices = PREFIX / 'dosdevices'; devices.mkdir(exist_ok=True)

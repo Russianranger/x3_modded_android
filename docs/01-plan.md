@@ -180,9 +180,12 @@ recovery), and a "reset to known-good runtime" button.
 | Storage (TC+AP+LxXRM+prefix) | import fails | free-space check before copy; streaming copy |
 | 6-layer limit in TRASC engine | fewer layers | 6 is enough for this preset; extend `MAX_LAYERS` in the fork if needed |
 
-## Decisions needed from you
+## Decisions (answered November 2026)
 
-1. Which builds do you own: Steam or GOG, and do you have the **Linux** depot/installer? Route A
-   needs the Linux build.
-2. Is LxXRM already assembled on a Windows PC? If yes, run the probe on it and commit the report.
-3. Fork TRASC (shared code, faster) or start a clean app that vendors only the pieces listed above?
+1. **Build:** Steam, with the Windows `X3AP.exe` (no Linux depot so far). That makes Route B the
+   first app; Route A waits for a Linux build.
+2. **Mod state:** LxXRM is already applied to the game folder, and that folder is on the AYN Thor
+   itself. `X3AP.exe` there is the **NoSteam** executable. No PC step is needed: the app imports the
+   folder directly.
+3. **App:** a new app in this repository that copies the needed TRASC parts (see
+   [07-app.md](07-app.md)), rather than a TRASC fork.
