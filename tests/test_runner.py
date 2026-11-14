@@ -150,6 +150,54 @@ class AudioTests(unittest.TestCase):
         self.assertEqual(env["TRASC_AUDIO_SOCKET"], "/session/audio.sock")
 
 
+class FirstDeviceRunTests(unittest.TestCase):
+    """Regressions from the first launch on the AYN Thor (black screen, Nov 2026)."""
+
+    # Trimmed from that run's x3-wine.log.
+    ABORT = (
+        "20246.738:0200:0204:trace:loaddll:build_module Loaded L\"C:\\\\windows\\\\system32\\\\ir50_32.dll\" at 79210000: builtin\n"
+        "20246.742:0200:0204:err:module:DelayLoadFailureHook failed to delay load winegstreamer.dll.winegstreamer_create_video_decoder\n"
+        "wine: Call from 000000007BBEA5FE to unimplemented function winegstreamer.dll.winegstreamer_create_video_decoder, aborting\n"
+        "wine: Call from 7BBEA5FE to unimplemented function winegstreamer.dll.winegstreamer_create_video_decoder, aborting\n"
+        "wine: Unimplemented function winegstreamer.dll.winegstreamer_create_video_decoder called at address 7BBEA5FE (thread 0204), starting debugger...\n"
+    )
+
+    def test_abort_on_missing_function_is_reported(self):
+        message = x3_runner.fatal_launch_error(self.ABORT, game=True)
+        self.assertIn("winegstreamer.dll winegstreamer_create_video_decoder", message)
+        self.assertIn("disabled or could not load", message)
+        log = x3_runner.WineLog(Path(tempfile.gettempdir()) / "unused.log", game=True)
+        log.observe(self.ABORT.encode())
+        self.assertEqual(log.snapshot()[1], message)
+
+    def test_codec_that_needs_gstreamer_is_disabled(self):
+        overrides = {}
+        for group in x3_runner.DLL_OVERRIDES.split(";"):
+            names, _, value = group.partition("=")
+            overrides.update({name: value for name in names.split(",")})
+        self.assertEqual(overrides["ir50_32"], "")
+        self.assertEqual(overrides["winegstreamer"], "")
+
+    def test_game_process_found_by_launch_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = Path(tmp)
+            (proc / "self").mkdir()
+            token = "0123abcd"
+            for pid, name, env in ((4100, "X3AP.exe", f"{x3_runner.LAUNCH_ENV}={token}"),
+                                   (4200, "X3AP.exe", "OTHER=1"),
+                                   (4300, "explorer.exe", f"{x3_runner.LAUNCH_ENV}={token}")):
+                task = proc / str(pid) / "task" / str(pid)
+                task.mkdir(parents=True)
+                (proc / str(pid) / "environ").write_bytes(f"PATH=/usr/bin\0{env}\0".encode())
+                fields = ["S"] + ["0"] * 18 + ["777"] + ["0"] * 30
+                (task / "stat").write_text(f"{pid} ({name}) " + " ".join(fields))
+                (task / "status").write_text("Cpus_allowed_list:\t0-7\n")
+            sample = x3_runner.process_threads(4300, proc=proc, launch_token=token, game_name="X3AP.exe")
+        self.assertTrue(sample["game_running"])
+        self.assertEqual(sample["processes"], 2)      # the unmarked X3AP.exe is not ours
+        self.assertEqual(sorted(t["pid"] for t in sample["threads"]), [4100, 4300])
+
+
 class SavesTests(unittest.TestCase):
     """X3's Documents\\Egosoft must end up in /saves, whatever Wine did with Documents."""
 

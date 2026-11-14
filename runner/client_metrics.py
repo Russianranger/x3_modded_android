@@ -6,6 +6,9 @@ import re
 import time
 from itertools import islice
 
+# X3: TRASC's marker is TRASC_CLIENT_LAUNCH; the X3 runner sets this name (x3_runner imports it).
+LAUNCH_ENV = 'X3_LAUNCH'
+
 
 def process_threads(root_pid, proc=Path('/proc'), launch_token=None, game_name='x3ap.exe'):
     """Never scan unrelated processes or log command lines / environments.
@@ -23,7 +26,7 @@ def process_threads(root_pid, proc=Path('/proc'), launch_token=None, game_name='
     incomplete = False
     if launch_token:
         pending = []
-        marker = ('TRASC_CLIENT_LAUNCH='+launch_token).encode()
+        marker = (LAUNCH_ENV+'='+launch_token).encode()  # X3: shared name
         try:
             uid = (proc/'self').stat().st_uid
             entries = list(islice(proc.iterdir(), 2049))
@@ -85,7 +88,7 @@ def allow_game_cpus(sample, launch_token, proc=Path('/proc'), game_name='x3ap.ex
     allowed = os.sched_getaffinity(0)
     result = {'available_cpus': sorted(allowed), 'changed_threads': 0, 'errors': 0}
     game_pids = {t['pid'] for t in sample['threads'] if t['tid'] == t['pid'] and t['name'].lower() == game_name[:15].lower()}  # X3: parameterised
-    marker = ('TRASC_CLIENT_LAUNCH='+launch_token).encode()
+    marker = (LAUNCH_ENV+'='+launch_token).encode()  # X3: shared name
     for pid in game_pids:
         parent = proc/str(pid)
         try:

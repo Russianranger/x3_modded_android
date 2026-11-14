@@ -31,7 +31,7 @@ import client_audio
 import client_presentation
 import client_vulkan
 import pe_info
-from client_metrics import process_threads, allow_game_cpus
+from client_metrics import LAUNCH_ENV, process_threads, allow_game_cpus
 from client_xauthority import write_xauthority
 
 HERE = Path(__file__).resolve().parent
@@ -62,7 +62,23 @@ def archive_log(path, limit=WINE_LOG_LIMIT):
     rotate(path, limit)
 
 
+# winegstreamer is off: the runtime ships no GStreamer, so its Unix side cannot load anyway.
+# ir50_32 (Wine's Indeo 5 codec) delay-loads winegstreamer_create_video_decoder when it is opened,
+# and Wine aborts the whole process when that delay load fails. X3AP.exe sets up DirectShow at
+# start-up; devenum opens every installed video codec to list it, reaches ir50_32 and X3 dies with
+# a black screen (first device run, Nov 2026). Disabling ir50_32 just drops it from that list.
+DLL_OVERRIDES = 'winemenubuilder,mscoree,mshtml,winegstreamer,ir50_32='
+GAME_START_GRACE = 150     # seconds after launch before a missing game process is reported
+GAME_EXIT_SAMPLES = 2      # consecutive 10 s samples without the game after it was running
+
+
 def fatal_launch_error(log, game=False):
+    missing = re.search(r'^wine: Call from \S+ to unimplemented function ([\w.]+?)\.(\w+), aborting', log, re.M)
+    if missing:
+        module, function = missing[1], missing[2]
+        disabled = re.search(r'DelayLoadFailureHook failed to delay load ' + re.escape(module), log, re.I)
+        return (f'The program stopped: it called {module} {function}, which this Wine runtime does not provide'
+                + (' (the DLL is disabled or could not load)' if disabled else '') + '. Export Logs and attach x3-wine.log.')
     if game:
         crash = re.search(r'^wine: Unhandled (page fault|exception)\b([^\r\n]{0,240})starting debugger', log, re.I | re.M)
         if crash:
@@ -283,13 +299,13 @@ class Supervisor:
                        'runtime_acceleration': request.get('runtime_acceleration', 'unspecified')}
         self.env = dict(os.environ, DISPLAY=':7', XAUTHORITY=str(SESSION / 'Xauthority'),
                         WINEPREFIX=str(PREFIX), WINEARCH='win64', WINEDEBUG=wine_debug(),
-                        WINEDLLOVERRIDES='winemenubuilder,mscoree,mshtml,winegstreamer=',
+                        WINEDLLOVERRIDES=DLL_OVERRIDES,
                         BOX64_DYNAREC_STRONGMEM='1', BOX64_DYNAREC_BIGBLOCK='2', BOX64_DYNAREC_SAFEFLAGS='1',
                         BOX64_MAXCPU='0', BOX64_RCFILE=str(SESSION / 'box64.rc'),
                         BOX64_LOG='1', BOX64_NOBANNER='0', BOX64_PATH='/opt/wine/bin',
                         BOX64_LD_LIBRARY_PATH='/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu:/opt/wine/lib/wine/x86_64-unix',
                         LIBGL_ALWAYS_SOFTWARE='1', GALLIUM_DRIVER='llvmpipe', LP_NUM_THREADS='4',
-                        WINE_D3D_CONFIG='csmt=1', X3_LAUNCH=self.launch_token)
+                        WINE_D3D_CONFIG='csmt=1', **{LAUNCH_ENV: self.launch_token})
         if (HERE / 'wineserver-patch.json').is_file():
             # Wine 10 prefers its adjacent binary; the app binds the verified helper over it.
             self.env['WINESERVER'] = '/opt/wine/bin/wineserver'
@@ -478,6 +494,8 @@ class Supervisor:
         launcher = self.spawn(args, 'x3-wine.log', env, cwd=cwd)
         self.status['timings_seconds']['until_launch_requested'] = round(time.monotonic() - self.started_monotonic, 3)
         self.update('launch_requested', launcher_pid=launcher.pid, command=args[2:])
+        launched, absent = time.monotonic(), 0
+        watch_game = self.request.get('mode') == 'game' or PurePosixPath(self.game_name).suffix.lower() == '.exe'
         while not self.stopping():
             if xserver.poll() is not None: raise RuntimeError('Display exited; see x3-display.log')
             observed, fatal = self.wine_log.snapshot()
@@ -487,7 +505,21 @@ class Supervisor:
                 sample = self.sample_threads(launcher.pid)
                 self.status['thread_sample'] = {k: v for k, v in sample.items() if k != 'threads'}
                 self.status['thread_sample']['thread_count'] = len(sample['threads'])
-                if sample.get('game_running'): self.status['game_running'] = True
+                if sample.get('game_running'):
+                    self.status['game_running'], absent = True, 0
+                    self.status.pop('warning', None)
+                elif watch_game and not sample.get('incomplete'):
+                    if self.status.get('game_running'):
+                        absent += 1
+                        if absent >= GAME_EXIT_SAMPLES:
+                            # The game quit (or died without a recognisable error): end the session
+                            # instead of leaving an empty black Wine desktop.
+                            self.status['stop_reason'] = 'game_exited'
+                            self.update(launcher_exit=launcher.poll(), **observed)
+                            return
+                    elif time.monotonic() - launched > GAME_START_GRACE and 'warning' not in self.status:
+                        self.status['warning'] = (f'{self.game_name} is not running {GAME_START_GRACE / 60:g} minutes after launch. '
+                                                  'Stop the game and export logs (x3-wine.log shows why).')
                 path = LOGS / 'x3-threads.log'
                 if path.exists() and path.stat().st_size > WINE_LOG_LIMIT:
                     os.replace(path, path.with_suffix('.overflow.log'))

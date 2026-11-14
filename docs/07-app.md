@@ -151,6 +151,42 @@ python3 -I -m unittest discover -s tests -v
 
 - **Display:** frames come over RFB only. TRASC's native presentation library is tied to TRASC's
   package name, so its zero-copy path is not available yet.
-- **Untested on hardware:** no device has run this build yet. Load times, Turnip compatibility with
-  X3's D3D9 renderer and the EAX-off audio path still need testing on the Thor.
+- **Music, comms voices and movies:** X3 plays these through DirectShow, and in Wine 10 DirectShow
+  decodes through `winegstreamer`. The TRASC runtime has no GStreamer, so `winegstreamer` is off.
+  Until a GStreamer add-on for the runtime exists, expect sound effects (DirectSound) but possibly
+  no music, voices or movies. A Wine report on X3: Reunion found that the videos and the radio
+  chatter need GStreamer plugins
+  ([bug 55738](https://bugs.winehq.org/show_bug.cgi?id=55738)).
 - **Route A** (native Linux `X3AP_main` via BOX32) is not wired into the app.
+
+## Device runs
+
+### 13 November 2026, AYN Thor (Android 13, Adreno 740), build 0.1.1
+
+**What worked:**
+
+- **Import:** 5,952 files, 11.0 GB. The NoSteam `X3AP.exe` was detected, and it is Large Address
+  Aware.
+- **Startup:** the runtime probe passed, and seccomp acceleration was active. Building the Wine
+  prefix took 68.5 s. DXVK 2.5.3 started on Turnip 24.3.4 (Adreno 740), and the ALSA to AudioTrack
+  bridge opened at 48 kHz.
+
+**Result:** a black screen.
+
+**Cause:** `X3AP.exe` aborted about 8 s after start:
+
+- It sets up DirectShow at start-up.
+- DirectShow's `devenum` opens every installed video codec to list it.
+- Wine's Indeo 5 codec (`ir50_32`) delay-loads `winegstreamer`, which is disabled.
+- Wine aborts the whole process when a delay load fails.
+
+**Fixes in 0.1.2:**
+
+- `ir50_32` is disabled.
+- The runner now reports this kind of abort as an error instead of sitting on an empty Wine
+  desktop.
+- The game-process marker matches the runner. 0.1.1 never found the game process, so it could not
+  tell the game had gone.
+- The session ends by itself when X3 exits.
+- The right-stick mouse channel retries its connection. It had lost a start-up race and stayed off
+  for the whole session.

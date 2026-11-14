@@ -225,17 +225,30 @@ public final class GameActivity extends Activity {
                 local.setSoTimeout(15000);
                 RfbConnection r=new RfbConnection(local.getInputStream(),local.getOutputStream(),this);r.handshake(true);
                 local.setSoTimeout(0);connection=r;
+                new Thread(this::connectInput,"x3-input-connect").start();
+                while(!closed)r.readUpdate();
+            }catch(IOException e){if(!closed)failure(e);}
+            finally{closeInput();try{if(socket!=null)socket.close();}catch(IOException ignored){}connection=null;}
+        },"x3-display").start();}
+        /**
+         * The relative-mouse helper opens input.sock a moment after the display socket appears (first
+         * Thor run: one try, 0.3 s too early, left the right stick dead all session). Retry for 30 s.
+         */
+        void connectInput(){
+            IOException last=null;
+            for(int attempt=0;attempt<60&&!closed;attempt++){
                 try{
                     LocalSocket control=new LocalSocket();inputSocket=control;
                     File inputPath=runtime.inputSocket();TransientPaths.validateSocket(inputPath);
                     control.connect(new LocalSocketAddress(inputPath.getPath(),LocalSocketAddress.Namespace.FILESYSTEM));control.setSoTimeout(3000);
                     RelativeInput channel=new RelativeInput(control.getInputStream(),control.getOutputStream());control.setSoTimeout(0);
-                    relative=channel;
-                }catch(IOException inputError){closeInput();Logs.failure(runtime.paths.logs,"relative_input",inputError);}
-                while(!closed)r.readUpdate();
-            }catch(IOException e){if(!closed)failure(e);}
-            finally{closeInput();try{if(socket!=null)socket.close();}catch(IOException ignored){}connection=null;}
-        },"x3-display").start();}
+                    if(closed){closeInput();return;}
+                    relative=channel;return;
+                }catch(IOException e){last=e;closeInput();}
+                try{Thread.sleep(500);}catch(InterruptedException e){Thread.currentThread().interrupt();return;}
+            }
+            if(last!=null&&!closed)Logs.failure(runtime.paths.logs,"relative_input",last);
+        }
         void failure(Exception error){if(closed)return;Logs.failure(runtime.paths.logs,"display",error);post(()->{displayError="Display disconnected: "+error.getMessage()+" · return to the launcher";if(!isDestroyed()){status.setText(displayError);setMenuOpen(true);}});}
         @Override public void resize(int w,int h){frameWidth=w;frameHeight=h;synchronized(pixelsLock){bitmap=Bitmap.createBitmap(w,h,Bitmap.Config.ARGB_8888);}post(()->input.size(w,h));}
         @Override public void pixels(int x,int y,int w,int h,int[] colors){synchronized(pixelsLock){bitmap.setPixels(colors,0,w,x,y,w,h);}}
