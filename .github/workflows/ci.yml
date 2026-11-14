@@ -63,7 +63,8 @@ jobs:
         run: gradle --no-daemon :app:assembleDebug 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
       - name: Surface compiler errors as annotations
         if: failure()
-        run: grep -E "^e: |error:|\.java:[0-9]+: error" build.log | head -40 | sed 's/^/::error::/' || true
+        run: |
+          grep -E '^e: |error:|[.]java:[0-9]+: error' build.log | head -40 | sed 's/^/::error::/' || true
       - name: Android lint (informational)
         continue-on-error: true
         run: gradle --no-daemon :app:lintDebug
