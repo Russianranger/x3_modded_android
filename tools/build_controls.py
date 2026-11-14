@@ -65,6 +65,8 @@ EXTENDED_KEYS = {"NumpadEnter", "NumpadAdd", "NumpadSubtract", "NumpadMultiply",
                  "Pause", "PrintScreen", "ScrollLock"} | {"Numpad%d" % i for i in range(10)}
 MODIFIERS = {"ShiftLeft", "ControlLeft", "AltLeft"}
 APP_ACTIONS = {"app.next", "app.prev", "app.help_toggle", "app.text_input", "app.client_menu", "none"}
+# The X3 app's ControllerInput accepts TRASC's vocabulary plus these (see docs/04-controls.md).
+X3APP_APP_ACTIONS = {"app.help_toggle": "HelpOverlayToggle", "app.text_input": "TextInput"}
 
 SOURCE_DISPLAY = {"L1": "LB", "R1": "RB", "L2": "LT", "R2": "RT", "L3": "L3", "R3": "R3",
                   "DpadUp": "D-pad ↑", "DpadDown": "D-pad ↓", "DpadLeft": "D-pad ←",
@@ -204,15 +206,15 @@ def resolve(keymap, profile):
             elif value == "app.client_menu":
                 entry.update(label="App menu (gear)", short="App menu", key="", v2="ClientMenu")
             elif value == "app.help_toggle":
-                entry.update(label="Pin / unpin this help overlay", short="Pin help", key="", v2=None)
+                entry.update(label="Pin / unpin this help overlay", short="Pin help", key="", v2=None, x3="HelpOverlayToggle")
             elif value == "app.text_input":
-                entry.update(label="Android keyboard (type text)", short="Keyboard", key="", v2=None)
+                entry.update(label="Android keyboard (type text)", short="Keyboard", key="", v2=None, x3="TextInput")
             elif value == "none":
                 entry.update(label="Unassigned", short="—", key="", v2="None")
             else:
                 a = actions[value]
                 entry.update(label=a["label"], short=a["short"], key=a["key"], status=a["status"],
-                             v2=a["key"] if a["key"] in TRASC_ACTIONS else None)
+                             v2=a["key"] if a["key"] in TRASC_ACTIONS else None, x3=a["key"])
             entry["key_display"] = key_display(entry["key"]) if entry["key"] else ""
             if entry["v2"] is None:
                 if not inherited:
@@ -220,6 +222,7 @@ def resolve(keymap, profile):
                 entry["v2_action"] = "None"
             else:
                 entry["v2_action"] = entry["v2"]
+            entry["x3_action"] = entry.pop("x3", entry["v2_action"])
             del entry["v2"]
             controls.append(entry)
         out.append({"index": i + 1, "name": layer["name"], "kind": layer["kind"],
@@ -228,12 +231,12 @@ def resolve(keymap, profile):
     return out, compat
 
 
-def trasc_v2(profile, resolved):
+def trasc_v2(profile, resolved, field="v2_action"):
     layers = []
     for i, layer in enumerate(resolved):
         bindings = {}
         for c in layer["controls"]:
-            bindings[c["source"]] = "Inherit" if (i > 0 and c["inherited"]) else c["v2_action"]
+            bindings[c["source"]] = "Inherit" if (i > 0 and c["inherited"]) else c[field]
         layers.append({"name": layer["name"], "bindings": bindings})
     return {"format": 2, "layers": layers, "deadzone": profile["deadzone"], "sensitivity": profile["sensitivity"]}
 
@@ -448,6 +451,14 @@ def build(check=False):
     validate(keymap, profile)
     resolved, compat = resolve(keymap, profile)
     v2 = trasc_v2(profile, resolved)
+    x3app = trasc_v2(profile, resolved, field="x3_action")
+    x3app_actions = TRASC_ACTIONS | EXTENDED_KEYS | set(X3APP_APP_ACTIONS.values())
+    for layer in x3app["layers"]:
+        for action in layer["bindings"].values():
+            atoms = action.split("+")
+            if action != "Inherit" and action not in x3app_actions and not (
+                    all(a in MODIFIERS for a in atoms[:-1]) and atoms[-1] in x3app_actions):
+                raise BuildError("X3 app action %r is outside the extended vocabulary" % action)
     for layer in v2["layers"]:
         for source, action in layer["bindings"].items():
             if action != "Inherit" and action not in TRASC_ACTIONS:
@@ -457,6 +468,10 @@ def build(check=False):
         GENERATED / "overlay-data.json": json.dumps({"format": 1, "profile": profile["name"], "layers": resolved},
                                                     indent=2, ensure_ascii=False) + "\n",
         GENERATED / "v2-compat-report.md": compat_report(compat),
+        GENERATED / "x3app-controller.json": json.dumps(x3app, indent=2, ensure_ascii=False) + "\n",
+        GENERATED / "x3app-layers.tsv": "".join(
+            "%d\t%s\t%s\t%s\n" % (i, layer["name"], s, a)
+            for i, layer in enumerate(x3app["layers"]) for s, a in layer["bindings"].items()),
         GENERATED / "trasc-layers.tsv": "".join(
             "%d\t%s\t%s\t%s\n" % (i, layer["name"], s, a)
             for i, layer in enumerate(v2["layers"]) for s, a in layer["bindings"].items()),

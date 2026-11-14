@@ -21,7 +21,8 @@
           "short": "Enter / select",
           "key": "Enter",
           "key_display": "Enter",
-          "v2_action": "Enter"
+          "v2_action": "Enter",
+          "x3_action": "Enter"
         },
         {
           "source": "B",
@@ -33,7 +34,8 @@
           "short": "Back / Esc",
           "key": "Escape",
           "key_display": "Esc",
-          "v2_action": "Escape"
+          "v2_action": "Escape",
+          "x3_action": "Escape"
         },
         {
           "source": "X",
@@ -45,7 +47,8 @@
           "short": "Full stop",
           "key": "Backspace",
           "key_display": "Bksp",
-          "v2_action": "Backspace"
+          "v2_action": "Backspace",
+          "x3_action": "Backspace"
         },
         {
           "source": "Y",
@@ -57,7 +60,8 @@
           "short": "Nearest enemy",
           "key": "ShiftLeft+KeyT",
           "key_display": "Shift+T",
-          "v2_action": "ShiftLeft+KeyT"
+          "v2_action": "ShiftLeft+KeyT",
+          "x3_action": "ShiftLeft+KeyT"
         },
         {
           "source": "L1",
@@ -69,7 +73,8 @@
           "short": "Prev target",
           "key": "PageDown",
           "key_display": "PgDn",
-          "v2_action": "PageDown"
+          "v2_action": "PageDown",
+          "x3_action": "PageDown"
         },
         {
           "source": "R1",
@@ -81,7 +86,8 @@
           "short": "Next target",
           "key": "PageUp",
           "key_display": "PgUp",
-          "v2_action": "PageUp"
+          "v2_action": "PageUp",
+          "x3_action": "PageUp"
         },
         {
           "source": "L2",
@@ -93,7 +99,8 @@
           "short": "Hold → Combat",
           "key": "",
           "key_display": "",
-          "v2_action": "HoldLayer5"
+          "v2_action": "HoldLayer5",
+          "x3_action": "HoldLayer5"
         },
         {
           "source": "R2",
@@ -105,7 +112,8 @@
           "short": "Fire",
           "key": "ControlLeft",
           "key_display": "Ctrl",
-          "v2_action": "ControlLeft"
+          "v2_action": "ControlLeft",
+          "x3_action": "ControlLeft"
         },
         {
           "source": "L3",
@@ -117,7 +125,8 @@
           "short": "Boost",
           "key": "Tab",
           "key_display": "Tab",
-          "v2_action": "Tab"
+          "v2_action": "Tab",
+          "x3_action": "Tab"
         },
         {
           "source": "R3",
@@ -129,7 +138,8 @@
           "short": "Mouse steer",
           "key": "MouseRight",
           "key_display": "RMB",
-          "v2_action": "MouseRight"
+          "v2_action": "MouseRight",
+          "x3_action": "MouseRight"
         },
         {
           "source": "Start",
@@ -141,7 +151,8 @@
           "short": "Main menu",
           "key": "NumpadEnter",
           "key_display": "Num Enter",
-          "v2_action": "None"
+          "v2_action": "None",
+          "x3_action": "NumpadEnter"
         },
         {
           "source": "Select",
@@ -153,7 +164,8 @@
           "short": "Hold → System",
           "key": "",
           "key_display": "",
-          "v2_action": "HoldLayer6"
+          "v2_action": "HoldLayer6",
+          "x3_action": "HoldLayer6"
         },
         {
           "source": "DpadUp",
@@ -165,7 +177,8 @@
           "short": "Throttle +",
           "key": "KeyX",
           "key_display": "X",
-          "v2_action": "KeyX"
+          "v2_action": "KeyX",
+          "x3_action": "KeyX"
         },
         {
           "source": "DpadDown",
@@ -177,7 +190,8 @@
           "short": "Throttle -",
           "key": "KeyZ",
           "key_display": "Z",
-          "v2_action": "KeyZ"
+          "v2_action": "KeyZ",
+          "x3_action": "KeyZ"
         },
         {
           "source": "DpadLeft",
@@ -189,7 +203,8 @@
           "short": "Roll left",
           "key": "KeyQ",
           "key_display": "Q",
-          "v2_action": "KeyQ"
+          "v2_action": "KeyQ",
+          "x3_action": "KeyQ"
         },
         {
           "source": "DpadRight",
@@ -201,7 +216,8 @@
           "short": "Roll right",
           "key": "KeyE",
           "key_display": "E",
-          "v2_action": "KeyE"
+          "v2_action": "KeyE",
+          "x3_action": "KeyE"
         },
         {
           "source": "LeftUp",
@@ -213,7 +229,8 @@
           "short": "Pitch down",
           "key": "ArrowUp",
           "key_display": "↑",
-          "v2_action": "ArrowUp"
+          "v2_action": "ArrowUp",
+          "x3_action": "ArrowUp"
         },
         {
           "source": "LeftDown",
@@ -225,7 +242,8 @@
           "short": "Pitch up",
           "key": "ArrowDown",
           "key_display": "↓",
-          "v2_action": "ArrowDown"
+          "v2_action": "ArrowDown",
+          "x3_action": "ArrowDown"
         },
         {
           "source": "LeftLeft",
@@ -237,7 +255,8 @@
           "short": "Yaw left",
           "key": "ArrowLeft",
           "key_display": "←",
-          "v2_action": "ArrowLeft"
+          "v2_action": "ArrowLeft",
+          "x3_action": "ArrowLeft"
         },
         {
           "source": "LeftRight",
@@ -249,7 +268,8 @@
           "short": "Yaw right",
           "key": "ArrowRight",
           "key_display": "→",
-          "v2_action": "ArrowRight"
+          "v2_action": "ArrowRight",
+          "x3_action": "ArrowRight"
         },
         {
           "source": "RightUp",
@@ -261,7 +281,8 @@
           "short": "Mouse",
           "key": "PointerUp",
           "key_display": "Mouse",
-          "v2_action": "PointerUp"
+          "v2_action": "PointerUp",
+          "x3_action": "PointerUp"
         },
         {
           "source": "RightDown",
@@ -273,7 +294,8 @@
           "short": "Mouse",
           "key": "PointerDown",
           "key_display": "Mouse",
-          "v2_action": "PointerDown"
+          "v2_action": "PointerDown",
+          "x3_action": "PointerDown"
         },
         {
           "source": "RightLeft",
@@ -285,7 +307,8 @@
           "short": "Mouse",
           "key": "PointerLeft",
           "key_display": "Mouse",
-          "v2_action": "PointerLeft"
+          "v2_action": "PointerLeft",
+          "x3_action": "PointerLeft"
         },
         {
           "source": "RightRight",
@@ -297,7 +320,8 @@
           "short": "Mouse",
           "key": "PointerRight",
           "key_display": "Mouse",
-          "v2_action": "PointerRight"
+          "v2_action": "PointerRight",
+          "x3_action": "PointerRight"
         }
       ]
     },
@@ -320,7 +344,8 @@
           "short": "Enter / select",
           "key": "Enter",
           "key_display": "Enter",
-          "v2_action": "Enter"
+          "v2_action": "Enter",
+          "x3_action": "Enter"
         },
         {
           "source": "B",
@@ -332,7 +357,8 @@
           "short": "Back / Esc",
           "key": "Escape",
           "key_display": "Esc",
-          "v2_action": "Escape"
+          "v2_action": "Escape",
+          "x3_action": "Escape"
         },
         {
           "source": "X",
@@ -344,7 +370,8 @@
           "short": "SETA",
           "key": "KeyJ",
           "key_display": "J",
-          "v2_action": "KeyJ"
+          "v2_action": "KeyJ",
+          "x3_action": "KeyJ"
         },
         {
           "source": "Y",
@@ -356,7 +383,8 @@
           "short": "Dock",
           "key": "ShiftLeft+KeyD",
           "key_display": "Shift+D",
-          "v2_action": "ShiftLeft+KeyD"
+          "v2_action": "ShiftLeft+KeyD",
+          "x3_action": "ShiftLeft+KeyD"
         },
         {
           "source": "L1",
@@ -368,7 +396,8 @@
           "short": "Sector map",
           "key": "Period",
           "key_display": ".",
-          "v2_action": "Period"
+          "v2_action": "Period",
+          "x3_action": "Period"
         },
         {
           "source": "R1",
@@ -380,7 +409,8 @@
           "short": "Universe map",
           "key": "Comma",
           "key_display": ",",
-          "v2_action": "Comma"
+          "v2_action": "Comma",
+          "x3_action": "Comma"
         },
         {
           "source": "L2",
@@ -392,7 +422,8 @@
           "short": "Hold → Combat",
           "key": "",
           "key_display": "",
-          "v2_action": "HoldLayer5"
+          "v2_action": "HoldLayer5",
+          "x3_action": "HoldLayer5"
         },
         {
           "source": "R2",
@@ -404,7 +435,8 @@
           "short": "Fire",
           "key": "ControlLeft",
           "key_display": "Ctrl",
-          "v2_action": "ControlLeft"
+          "v2_action": "ControlLeft",
+          "x3_action": "ControlLeft"
         },
         {
           "source": "L3",
@@ -416,7 +448,8 @@
           "short": "Target view",
           "key": "F3",
           "key_display": "F3",
-          "v2_action": "F3"
+          "v2_action": "F3",
+          "x3_action": "F3"
         },
         {
           "source": "R3",
@@ -428,7 +461,8 @@
           "short": "Mouse steer",
           "key": "MouseRight",
           "key_display": "RMB",
-          "v2_action": "MouseRight"
+          "v2_action": "MouseRight",
+          "x3_action": "MouseRight"
         },
         {
           "source": "Start",
@@ -440,7 +474,8 @@
           "short": "Main menu",
           "key": "NumpadEnter",
           "key_display": "Num Enter",
-          "v2_action": "None"
+          "v2_action": "None",
+          "x3_action": "NumpadEnter"
         },
         {
           "source": "Select",
@@ -452,7 +487,8 @@
           "short": "Hold → System",
           "key": "",
           "key_display": "",
-          "v2_action": "HoldLayer6"
+          "v2_action": "HoldLayer6",
+          "x3_action": "HoldLayer6"
         },
         {
           "source": "DpadUp",
@@ -464,7 +500,8 @@
           "short": "Autopilot",
           "key": "KeyU",
           "key_display": "U",
-          "v2_action": "KeyU"
+          "v2_action": "KeyU",
+          "x3_action": "KeyU"
         },
         {
           "source": "DpadDown",
@@ -476,7 +513,8 @@
           "short": "Jumpdrive",
           "key": "ShiftLeft+KeyJ",
           "key_display": "Shift+J",
-          "v2_action": "ShiftLeft+KeyJ"
+          "v2_action": "ShiftLeft+KeyJ",
+          "x3_action": "ShiftLeft+KeyJ"
         },
         {
           "source": "DpadLeft",
@@ -488,7 +526,8 @@
           "short": "Cockpit view",
           "key": "F1",
           "key_display": "F1",
-          "v2_action": "F1"
+          "v2_action": "F1",
+          "x3_action": "F1"
         },
         {
           "source": "DpadRight",
@@ -500,7 +539,8 @@
           "short": "External view",
           "key": "F2",
           "key_display": "F2",
-          "v2_action": "F2"
+          "v2_action": "F2",
+          "x3_action": "F2"
         },
         {
           "source": "LeftUp",
@@ -512,7 +552,8 @@
           "short": "Pitch down",
           "key": "ArrowUp",
           "key_display": "↑",
-          "v2_action": "ArrowUp"
+          "v2_action": "ArrowUp",
+          "x3_action": "ArrowUp"
         },
         {
           "source": "LeftDown",
@@ -524,7 +565,8 @@
           "short": "Pitch up",
           "key": "ArrowDown",
           "key_display": "↓",
-          "v2_action": "ArrowDown"
+          "v2_action": "ArrowDown",
+          "x3_action": "ArrowDown"
         },
         {
           "source": "LeftLeft",
@@ -536,7 +578,8 @@
           "short": "Yaw left",
           "key": "ArrowLeft",
           "key_display": "←",
-          "v2_action": "ArrowLeft"
+          "v2_action": "ArrowLeft",
+          "x3_action": "ArrowLeft"
         },
         {
           "source": "LeftRight",
@@ -548,7 +591,8 @@
           "short": "Yaw right",
           "key": "ArrowRight",
           "key_display": "→",
-          "v2_action": "ArrowRight"
+          "v2_action": "ArrowRight",
+          "x3_action": "ArrowRight"
         },
         {
           "source": "RightUp",
@@ -560,7 +604,8 @@
           "short": "Mouse",
           "key": "PointerUp",
           "key_display": "Mouse",
-          "v2_action": "PointerUp"
+          "v2_action": "PointerUp",
+          "x3_action": "PointerUp"
         },
         {
           "source": "RightDown",
@@ -572,7 +617,8 @@
           "short": "Mouse",
           "key": "PointerDown",
           "key_display": "Mouse",
-          "v2_action": "PointerDown"
+          "v2_action": "PointerDown",
+          "x3_action": "PointerDown"
         },
         {
           "source": "RightLeft",
@@ -584,7 +630,8 @@
           "short": "Mouse",
           "key": "PointerLeft",
           "key_display": "Mouse",
-          "v2_action": "PointerLeft"
+          "v2_action": "PointerLeft",
+          "x3_action": "PointerLeft"
         },
         {
           "source": "RightRight",
@@ -596,7 +643,8 @@
           "short": "Mouse",
           "key": "PointerRight",
           "key_display": "Mouse",
-          "v2_action": "PointerRight"
+          "v2_action": "PointerRight",
+          "x3_action": "PointerRight"
         }
       ]
     },
@@ -619,7 +667,8 @@
           "short": "Enter / select",
           "key": "Enter",
           "key_display": "Enter",
-          "v2_action": "Enter"
+          "v2_action": "Enter",
+          "x3_action": "Enter"
         },
         {
           "source": "B",
@@ -631,7 +680,8 @@
           "short": "Back / Esc",
           "key": "Escape",
           "key_display": "Esc",
-          "v2_action": "Escape"
+          "v2_action": "Escape",
+          "x3_action": "Escape"
         },
         {
           "source": "X",
@@ -643,7 +693,8 @@
           "short": "Fill (max)",
           "key": "End",
           "key_display": "End",
-          "v2_action": "End"
+          "v2_action": "End",
+          "x3_action": "End"
         },
         {
           "source": "Y",
@@ -655,7 +706,8 @@
           "short": "Empty (0)",
           "key": "Home",
           "key_display": "Home",
-          "v2_action": "Home"
+          "v2_action": "Home",
+          "x3_action": "Home"
         },
         {
           "source": "L1",
@@ -667,7 +719,8 @@
           "short": "Scroll up",
           "key": "WheelUp",
           "key_display": "Wheel ↑",
-          "v2_action": "WheelUp"
+          "v2_action": "WheelUp",
+          "x3_action": "WheelUp"
         },
         {
           "source": "R1",
@@ -679,7 +732,8 @@
           "short": "Scroll down",
           "key": "WheelDown",
           "key_display": "Wheel ↓",
-          "v2_action": "WheelDown"
+          "v2_action": "WheelDown",
+          "x3_action": "WheelDown"
         },
         {
           "source": "L2",
@@ -691,7 +745,8 @@
           "short": "Hold → Combat",
           "key": "",
           "key_display": "",
-          "v2_action": "HoldLayer5"
+          "v2_action": "HoldLayer5",
+          "x3_action": "HoldLayer5"
         },
         {
           "source": "R2",
@@ -703,7 +758,8 @@
           "short": "Click",
           "key": "MouseLeft",
           "key_display": "LMB",
-          "v2_action": "MouseLeft"
+          "v2_action": "MouseLeft",
+          "x3_action": "MouseLeft"
         },
         {
           "source": "L3",
@@ -715,7 +771,8 @@
           "short": "Close menus",
           "key": "Delete",
           "key_display": "Del",
-          "v2_action": "Delete"
+          "v2_action": "Delete",
+          "x3_action": "Delete"
         },
         {
           "source": "R3",
@@ -727,7 +784,8 @@
           "short": "Mouse steer",
           "key": "MouseRight",
           "key_display": "RMB",
-          "v2_action": "MouseRight"
+          "v2_action": "MouseRight",
+          "x3_action": "MouseRight"
         },
         {
           "source": "Start",
@@ -739,7 +797,8 @@
           "short": "Main menu",
           "key": "NumpadEnter",
           "key_display": "Num Enter",
-          "v2_action": "None"
+          "v2_action": "None",
+          "x3_action": "NumpadEnter"
         },
         {
           "source": "Select",
@@ -751,7 +810,8 @@
           "short": "Hold → System",
           "key": "",
           "key_display": "",
-          "v2_action": "HoldLayer6"
+          "v2_action": "HoldLayer6",
+          "x3_action": "HoldLayer6"
         },
         {
           "source": "DpadUp",
@@ -763,7 +823,8 @@
           "short": "Menu up",
           "key": "ArrowUp",
           "key_display": "↑",
-          "v2_action": "ArrowUp"
+          "v2_action": "ArrowUp",
+          "x3_action": "ArrowUp"
         },
         {
           "source": "DpadDown",
@@ -775,7 +836,8 @@
           "short": "Menu down",
           "key": "ArrowDown",
           "key_display": "↓",
-          "v2_action": "ArrowDown"
+          "v2_action": "ArrowDown",
+          "x3_action": "ArrowDown"
         },
         {
           "source": "DpadLeft",
@@ -787,7 +849,8 @@
           "short": "Menu left",
           "key": "ArrowLeft",
           "key_display": "←",
-          "v2_action": "ArrowLeft"
+          "v2_action": "ArrowLeft",
+          "x3_action": "ArrowLeft"
         },
         {
           "source": "DpadRight",
@@ -799,7 +862,8 @@
           "short": "Menu right",
           "key": "ArrowRight",
           "key_display": "→",
-          "v2_action": "ArrowRight"
+          "v2_action": "ArrowRight",
+          "x3_action": "ArrowRight"
         },
         {
           "source": "LeftUp",
@@ -811,7 +875,8 @@
           "short": "Pitch down",
           "key": "ArrowUp",
           "key_display": "↑",
-          "v2_action": "ArrowUp"
+          "v2_action": "ArrowUp",
+          "x3_action": "ArrowUp"
         },
         {
           "source": "LeftDown",
@@ -823,7 +888,8 @@
           "short": "Pitch up",
           "key": "ArrowDown",
           "key_display": "↓",
-          "v2_action": "ArrowDown"
+          "v2_action": "ArrowDown",
+          "x3_action": "ArrowDown"
         },
         {
           "source": "LeftLeft",
@@ -835,7 +901,8 @@
           "short": "Yaw left",
           "key": "ArrowLeft",
           "key_display": "←",
-          "v2_action": "ArrowLeft"
+          "v2_action": "ArrowLeft",
+          "x3_action": "ArrowLeft"
         },
         {
           "source": "LeftRight",
@@ -847,7 +914,8 @@
           "short": "Yaw right",
           "key": "ArrowRight",
           "key_display": "→",
-          "v2_action": "ArrowRight"
+          "v2_action": "ArrowRight",
+          "x3_action": "ArrowRight"
         },
         {
           "source": "RightUp",
@@ -859,7 +927,8 @@
           "short": "Mouse",
           "key": "PointerUp",
           "key_display": "Mouse",
-          "v2_action": "PointerUp"
+          "v2_action": "PointerUp",
+          "x3_action": "PointerUp"
         },
         {
           "source": "RightDown",
@@ -871,7 +940,8 @@
           "short": "Mouse",
           "key": "PointerDown",
           "key_display": "Mouse",
-          "v2_action": "PointerDown"
+          "v2_action": "PointerDown",
+          "x3_action": "PointerDown"
         },
         {
           "source": "RightLeft",
@@ -883,7 +953,8 @@
           "short": "Mouse",
           "key": "PointerLeft",
           "key_display": "Mouse",
-          "v2_action": "PointerLeft"
+          "v2_action": "PointerLeft",
+          "x3_action": "PointerLeft"
         },
         {
           "source": "RightRight",
@@ -895,7 +966,8 @@
           "short": "Mouse",
           "key": "PointerRight",
           "key_display": "Mouse",
-          "v2_action": "PointerRight"
+          "v2_action": "PointerRight",
+          "x3_action": "PointerRight"
         }
       ]
     },
@@ -918,7 +990,8 @@
           "short": "Enter / select",
           "key": "Enter",
           "key_display": "Enter",
-          "v2_action": "Enter"
+          "v2_action": "Enter",
+          "x3_action": "Enter"
         },
         {
           "source": "B",
@@ -930,7 +1003,8 @@
           "short": "Back / Esc",
           "key": "Escape",
           "key_display": "Esc",
-          "v2_action": "Escape"
+          "v2_action": "Escape",
+          "x3_action": "Escape"
         },
         {
           "source": "X",
@@ -942,7 +1016,8 @@
           "short": "Command console",
           "key": "ShiftLeft+KeyC",
           "key_display": "Shift+C",
-          "v2_action": "ShiftLeft+KeyC"
+          "v2_action": "ShiftLeft+KeyC",
+          "x3_action": "ShiftLeft+KeyC"
         },
         {
           "source": "Y",
@@ -954,7 +1029,8 @@
           "short": "Comms",
           "key": "KeyC",
           "key_display": "C",
-          "v2_action": "KeyC"
+          "v2_action": "KeyC",
+          "x3_action": "KeyC"
         },
         {
           "source": "L1",
@@ -966,7 +1042,8 @@
           "short": "Property",
           "key": "KeyR",
           "key_display": "R",
-          "v2_action": "KeyR"
+          "v2_action": "KeyR",
+          "x3_action": "KeyR"
         },
         {
           "source": "R1",
@@ -978,7 +1055,8 @@
           "short": "Player",
           "key": "KeyP",
           "key_display": "P",
-          "v2_action": "KeyP"
+          "v2_action": "KeyP",
+          "x3_action": "KeyP"
         },
         {
           "source": "L2",
@@ -990,7 +1068,8 @@
           "short": "Hold → Combat",
           "key": "",
           "key_display": "",
-          "v2_action": "HoldLayer5"
+          "v2_action": "HoldLayer5",
+          "x3_action": "HoldLayer5"
         },
         {
           "source": "R2",
@@ -1002,7 +1081,8 @@
           "short": "Fire",
           "key": "ControlLeft",
           "key_display": "Ctrl",
-          "v2_action": "ControlLeft"
+          "v2_action": "ControlLeft",
+          "x3_action": "ControlLeft"
         },
         {
           "source": "L3",
@@ -1014,7 +1094,8 @@
           "short": "Target info",
           "key": "KeyI",
           "key_display": "I",
-          "v2_action": "KeyI"
+          "v2_action": "KeyI",
+          "x3_action": "KeyI"
         },
         {
           "source": "R3",
@@ -1026,7 +1107,8 @@
           "short": "Ship menu",
           "key": "KeyY",
           "key_display": "Y",
-          "v2_action": "KeyY"
+          "v2_action": "KeyY",
+          "x3_action": "KeyY"
         },
         {
           "source": "Start",
@@ -1038,7 +1120,8 @@
           "short": "Main menu",
           "key": "NumpadEnter",
           "key_display": "Num Enter",
-          "v2_action": "None"
+          "v2_action": "None",
+          "x3_action": "NumpadEnter"
         },
         {
           "source": "Select",
@@ -1050,7 +1133,8 @@
           "short": "Hold → System",
           "key": "",
           "key_display": "",
-          "v2_action": "HoldLayer6"
+          "v2_action": "HoldLayer6",
+          "x3_action": "HoldLayer6"
         },
         {
           "source": "DpadUp",
@@ -1062,7 +1146,8 @@
           "short": "Script 1",
           "key": "ShiftLeft+F5",
           "key_display": "Shift+F5",
-          "v2_action": "ShiftLeft+F5"
+          "v2_action": "ShiftLeft+F5",
+          "x3_action": "ShiftLeft+F5"
         },
         {
           "source": "DpadDown",
@@ -1074,7 +1159,8 @@
           "short": "Script 3",
           "key": "ShiftLeft+F7",
           "key_display": "Shift+F7",
-          "v2_action": "ShiftLeft+F7"
+          "v2_action": "ShiftLeft+F7",
+          "x3_action": "ShiftLeft+F7"
         },
         {
           "source": "DpadLeft",
@@ -1086,7 +1172,8 @@
           "short": "Script 4",
           "key": "ShiftLeft+F8",
           "key_display": "Shift+F8",
-          "v2_action": "ShiftLeft+F8"
+          "v2_action": "ShiftLeft+F8",
+          "x3_action": "ShiftLeft+F8"
         },
         {
           "source": "DpadRight",
@@ -1098,7 +1185,8 @@
           "short": "Script 2",
           "key": "ShiftLeft+F6",
           "key_display": "Shift+F6",
-          "v2_action": "ShiftLeft+F6"
+          "v2_action": "ShiftLeft+F6",
+          "x3_action": "ShiftLeft+F6"
         },
         {
           "source": "LeftUp",
@@ -1110,7 +1198,8 @@
           "short": "Pitch down",
           "key": "ArrowUp",
           "key_display": "↑",
-          "v2_action": "ArrowUp"
+          "v2_action": "ArrowUp",
+          "x3_action": "ArrowUp"
         },
         {
           "source": "LeftDown",
@@ -1122,7 +1211,8 @@
           "short": "Pitch up",
           "key": "ArrowDown",
           "key_display": "↓",
-          "v2_action": "ArrowDown"
+          "v2_action": "ArrowDown",
+          "x3_action": "ArrowDown"
         },
         {
           "source": "LeftLeft",
@@ -1134,7 +1224,8 @@
           "short": "Yaw left",
           "key": "ArrowLeft",
           "key_display": "←",
-          "v2_action": "ArrowLeft"
+          "v2_action": "ArrowLeft",
+          "x3_action": "ArrowLeft"
         },
         {
           "source": "LeftRight",
@@ -1146,7 +1237,8 @@
           "short": "Yaw right",
           "key": "ArrowRight",
           "key_display": "→",
-          "v2_action": "ArrowRight"
+          "v2_action": "ArrowRight",
+          "x3_action": "ArrowRight"
         },
         {
           "source": "RightUp",
@@ -1158,7 +1250,8 @@
           "short": "Mouse",
           "key": "PointerUp",
           "key_display": "Mouse",
-          "v2_action": "PointerUp"
+          "v2_action": "PointerUp",
+          "x3_action": "PointerUp"
         },
         {
           "source": "RightDown",
@@ -1170,7 +1263,8 @@
           "short": "Mouse",
           "key": "PointerDown",
           "key_display": "Mouse",
-          "v2_action": "PointerDown"
+          "v2_action": "PointerDown",
+          "x3_action": "PointerDown"
         },
         {
           "source": "RightLeft",
@@ -1182,7 +1276,8 @@
           "short": "Mouse",
           "key": "PointerLeft",
           "key_display": "Mouse",
-          "v2_action": "PointerLeft"
+          "v2_action": "PointerLeft",
+          "x3_action": "PointerLeft"
         },
         {
           "source": "RightRight",
@@ -1194,7 +1289,8 @@
           "short": "Mouse",
           "key": "PointerRight",
           "key_display": "Mouse",
-          "v2_action": "PointerRight"
+          "v2_action": "PointerRight",
+          "x3_action": "PointerRight"
         }
       ]
     },
@@ -1217,7 +1313,8 @@
           "short": "Missile",
           "key": "KeyL",
           "key_display": "L",
-          "v2_action": "KeyL"
+          "v2_action": "KeyL",
+          "x3_action": "KeyL"
         },
         {
           "source": "B",
@@ -1229,7 +1326,8 @@
           "short": "Next missile",
           "key": "KeyM",
           "key_display": "M",
-          "v2_action": "KeyM"
+          "v2_action": "KeyM",
+          "x3_action": "KeyM"
         },
         {
           "source": "X",
@@ -1241,7 +1339,8 @@
           "short": "Auto-aim",
           "key": "KeyK",
           "key_display": "K",
-          "v2_action": "KeyK"
+          "v2_action": "KeyK",
+          "x3_action": "KeyK"
         },
         {
           "source": "Y",
@@ -1253,7 +1352,8 @@
           "short": "Target ahead",
           "key": "KeyT",
           "key_display": "T",
-          "v2_action": "KeyT"
+          "v2_action": "KeyT",
+          "x3_action": "KeyT"
         },
         {
           "source": "L1",
@@ -1265,7 +1365,8 @@
           "short": "Prev enemy",
           "key": "End",
           "key_display": "End",
-          "v2_action": "End"
+          "v2_action": "End",
+          "x3_action": "End"
         },
         {
           "source": "R1",
@@ -1277,7 +1378,8 @@
           "short": "Next enemy",
           "key": "Home",
           "key_display": "Home",
-          "v2_action": "Home"
+          "v2_action": "Home",
+          "x3_action": "Home"
         },
         {
           "source": "L2",
@@ -1289,7 +1391,8 @@
           "short": "Hold → Combat",
           "key": "",
           "key_display": "",
-          "v2_action": "HoldLayer5"
+          "v2_action": "HoldLayer5",
+          "x3_action": "HoldLayer5"
         },
         {
           "source": "R2",
@@ -1301,7 +1404,8 @@
           "short": "Fire",
           "key": "ControlLeft",
           "key_display": "Ctrl",
-          "v2_action": "ControlLeft"
+          "v2_action": "ControlLeft",
+          "x3_action": "ControlLeft"
         },
         {
           "source": "L3",
@@ -1313,7 +1417,8 @@
           "short": "Wing attack",
           "key": "ShiftLeft+Digit6",
           "key_display": "Shift+6",
-          "v2_action": "ShiftLeft+Digit6"
+          "v2_action": "ShiftLeft+Digit6",
+          "x3_action": "ShiftLeft+Digit6"
         },
         {
           "source": "R3",
@@ -1325,7 +1430,8 @@
           "short": "Wing protect",
           "key": "ShiftLeft+Digit7",
           "key_display": "Shift+7",
-          "v2_action": "ShiftLeft+Digit7"
+          "v2_action": "ShiftLeft+Digit7",
+          "x3_action": "ShiftLeft+Digit7"
         },
         {
           "source": "Start",
@@ -1337,7 +1443,8 @@
           "short": "Drones attack",
           "key": "ShiftLeft+Digit8",
           "key_display": "Shift+8",
-          "v2_action": "ShiftLeft+Digit8"
+          "v2_action": "ShiftLeft+Digit8",
+          "x3_action": "ShiftLeft+Digit8"
         },
         {
           "source": "Select",
@@ -1349,7 +1456,8 @@
           "short": "Hold → System",
           "key": "",
           "key_display": "",
-          "v2_action": "HoldLayer6"
+          "v2_action": "HoldLayer6",
+          "x3_action": "HoldLayer6"
         },
         {
           "source": "DpadUp",
@@ -1361,7 +1469,8 @@
           "short": "Weapons 1",
           "key": "Digit1",
           "key_display": "1",
-          "v2_action": "Digit1"
+          "v2_action": "Digit1",
+          "x3_action": "Digit1"
         },
         {
           "source": "DpadDown",
@@ -1373,7 +1482,8 @@
           "short": "Weapons 3",
           "key": "Digit3",
           "key_display": "3",
-          "v2_action": "Digit3"
+          "v2_action": "Digit3",
+          "x3_action": "Digit3"
         },
         {
           "source": "DpadLeft",
@@ -1385,7 +1495,8 @@
           "short": "Weapons 4",
           "key": "Digit4",
           "key_display": "4",
-          "v2_action": "Digit4"
+          "v2_action": "Digit4",
+          "x3_action": "Digit4"
         },
         {
           "source": "DpadRight",
@@ -1397,7 +1508,8 @@
           "short": "Weapons 2",
           "key": "Digit2",
           "key_display": "2",
-          "v2_action": "Digit2"
+          "v2_action": "Digit2",
+          "x3_action": "Digit2"
         },
         {
           "source": "LeftUp",
@@ -1409,7 +1521,8 @@
           "short": "Pitch down",
           "key": "ArrowUp",
           "key_display": "↑",
-          "v2_action": "ArrowUp"
+          "v2_action": "ArrowUp",
+          "x3_action": "ArrowUp"
         },
         {
           "source": "LeftDown",
@@ -1421,7 +1534,8 @@
           "short": "Pitch up",
           "key": "ArrowDown",
           "key_display": "↓",
-          "v2_action": "ArrowDown"
+          "v2_action": "ArrowDown",
+          "x3_action": "ArrowDown"
         },
         {
           "source": "LeftLeft",
@@ -1433,7 +1547,8 @@
           "short": "Yaw left",
           "key": "ArrowLeft",
           "key_display": "←",
-          "v2_action": "ArrowLeft"
+          "v2_action": "ArrowLeft",
+          "x3_action": "ArrowLeft"
         },
         {
           "source": "LeftRight",
@@ -1445,7 +1560,8 @@
           "short": "Yaw right",
           "key": "ArrowRight",
           "key_display": "→",
-          "v2_action": "ArrowRight"
+          "v2_action": "ArrowRight",
+          "x3_action": "ArrowRight"
         },
         {
           "source": "RightUp",
@@ -1457,7 +1573,8 @@
           "short": "Strafe up",
           "key": "KeyW",
           "key_display": "W",
-          "v2_action": "KeyW"
+          "v2_action": "KeyW",
+          "x3_action": "KeyW"
         },
         {
           "source": "RightDown",
@@ -1469,7 +1586,8 @@
           "short": "Strafe down",
           "key": "KeyS",
           "key_display": "S",
-          "v2_action": "KeyS"
+          "v2_action": "KeyS",
+          "x3_action": "KeyS"
         },
         {
           "source": "RightLeft",
@@ -1481,7 +1599,8 @@
           "short": "Strafe left",
           "key": "KeyA",
           "key_display": "A",
-          "v2_action": "KeyA"
+          "v2_action": "KeyA",
+          "x3_action": "KeyA"
         },
         {
           "source": "RightRight",
@@ -1493,7 +1612,8 @@
           "short": "Strafe right",
           "key": "KeyD",
           "key_display": "D",
-          "v2_action": "KeyD"
+          "v2_action": "KeyD",
+          "x3_action": "KeyD"
         }
       ]
     },
@@ -1516,7 +1636,8 @@
           "short": "Pause",
           "key": "Pause",
           "key_display": "Pause",
-          "v2_action": "None"
+          "v2_action": "None",
+          "x3_action": "Pause"
         },
         {
           "source": "B",
@@ -1528,7 +1649,8 @@
           "short": "App menu",
           "key": "",
           "key_display": "",
-          "v2_action": "ClientMenu"
+          "v2_action": "ClientMenu",
+          "x3_action": "ClientMenu"
         },
         {
           "source": "X",
@@ -1540,7 +1662,8 @@
           "short": "Save",
           "key": "ShiftLeft+KeyS",
           "key_display": "Shift+S",
-          "v2_action": "ShiftLeft+KeyS"
+          "v2_action": "ShiftLeft+KeyS",
+          "x3_action": "ShiftLeft+KeyS"
         },
         {
           "source": "Y",
@@ -1552,7 +1675,8 @@
           "short": "Keyboard",
           "key": "",
           "key_display": "",
-          "v2_action": "None"
+          "v2_action": "None",
+          "x3_action": "TextInput"
         },
         {
           "source": "L1",
@@ -1564,7 +1688,8 @@
           "short": "Options",
           "key": "ShiftLeft+KeyO",
           "key_display": "Shift+O",
-          "v2_action": "ShiftLeft+KeyO"
+          "v2_action": "ShiftLeft+KeyO",
+          "x3_action": "ShiftLeft+KeyO"
         },
         {
           "source": "R1",
@@ -1576,7 +1701,8 @@
           "short": "Screenshot",
           "key": "F9",
           "key_display": "F9",
-          "v2_action": "F9"
+          "v2_action": "F9",
+          "x3_action": "F9"
         },
         {
           "source": "L2",
@@ -1588,7 +1714,8 @@
           "short": "Hold → Combat",
           "key": "",
           "key_display": "",
-          "v2_action": "HoldLayer5"
+          "v2_action": "HoldLayer5",
+          "x3_action": "HoldLayer5"
         },
         {
           "source": "R2",
@@ -1600,7 +1727,8 @@
           "short": "HUD on/off",
           "key": "ShiftLeft+KeyH",
           "key_display": "Shift+H",
-          "v2_action": "ShiftLeft+KeyH"
+          "v2_action": "ShiftLeft+KeyH",
+          "x3_action": "ShiftLeft+KeyH"
         },
         {
           "source": "L3",
@@ -1612,7 +1740,8 @@
           "short": "Freight",
           "key": "KeyF",
           "key_display": "F",
-          "v2_action": "KeyF"
+          "v2_action": "KeyF",
+          "x3_action": "KeyF"
         },
         {
           "source": "R3",
@@ -1624,7 +1753,8 @@
           "short": "Cargo door",
           "key": "KeyO",
           "key_display": "O",
-          "v2_action": "KeyO"
+          "v2_action": "KeyO",
+          "x3_action": "KeyO"
         },
         {
           "source": "Start",
@@ -1636,7 +1766,8 @@
           "short": "Pin help",
           "key": "",
           "key_display": "",
-          "v2_action": "None"
+          "v2_action": "None",
+          "x3_action": "HelpOverlayToggle"
         },
         {
           "source": "Select",
@@ -1648,7 +1779,8 @@
           "short": "Hold → System",
           "key": "",
           "key_display": "",
-          "v2_action": "HoldLayer6"
+          "v2_action": "HoldLayer6",
+          "x3_action": "HoldLayer6"
         },
         {
           "source": "DpadUp",
@@ -1660,7 +1792,8 @@
           "short": "→ Flight",
           "key": "",
           "key_display": "",
-          "v2_action": "Layer1"
+          "v2_action": "Layer1",
+          "x3_action": "Layer1"
         },
         {
           "source": "DpadDown",
@@ -1672,7 +1805,8 @@
           "short": "→ Menus",
           "key": "",
           "key_display": "",
-          "v2_action": "Layer3"
+          "v2_action": "Layer3",
+          "x3_action": "Layer3"
         },
         {
           "source": "DpadLeft",
@@ -1684,7 +1818,8 @@
           "short": "→ Command",
           "key": "",
           "key_display": "",
-          "v2_action": "Layer4"
+          "v2_action": "Layer4",
+          "x3_action": "Layer4"
         },
         {
           "source": "DpadRight",
@@ -1696,7 +1831,8 @@
           "short": "→ Navigate",
           "key": "",
           "key_display": "",
-          "v2_action": "Layer2"
+          "v2_action": "Layer2",
+          "x3_action": "Layer2"
         },
         {
           "source": "LeftUp",
@@ -1708,7 +1844,8 @@
           "short": "Pitch down",
           "key": "ArrowUp",
           "key_display": "↑",
-          "v2_action": "ArrowUp"
+          "v2_action": "ArrowUp",
+          "x3_action": "ArrowUp"
         },
         {
           "source": "LeftDown",
@@ -1720,7 +1857,8 @@
           "short": "Pitch up",
           "key": "ArrowDown",
           "key_display": "↓",
-          "v2_action": "ArrowDown"
+          "v2_action": "ArrowDown",
+          "x3_action": "ArrowDown"
         },
         {
           "source": "LeftLeft",
@@ -1732,7 +1870,8 @@
           "short": "Yaw left",
           "key": "ArrowLeft",
           "key_display": "←",
-          "v2_action": "ArrowLeft"
+          "v2_action": "ArrowLeft",
+          "x3_action": "ArrowLeft"
         },
         {
           "source": "LeftRight",
@@ -1744,7 +1883,8 @@
           "short": "Yaw right",
           "key": "ArrowRight",
           "key_display": "→",
-          "v2_action": "ArrowRight"
+          "v2_action": "ArrowRight",
+          "x3_action": "ArrowRight"
         },
         {
           "source": "RightUp",
@@ -1756,7 +1896,8 @@
           "short": "Mouse",
           "key": "PointerUp",
           "key_display": "Mouse",
-          "v2_action": "PointerUp"
+          "v2_action": "PointerUp",
+          "x3_action": "PointerUp"
         },
         {
           "source": "RightDown",
@@ -1768,7 +1909,8 @@
           "short": "Mouse",
           "key": "PointerDown",
           "key_display": "Mouse",
-          "v2_action": "PointerDown"
+          "v2_action": "PointerDown",
+          "x3_action": "PointerDown"
         },
         {
           "source": "RightLeft",
@@ -1780,7 +1922,8 @@
           "short": "Mouse",
           "key": "PointerLeft",
           "key_display": "Mouse",
-          "v2_action": "PointerLeft"
+          "v2_action": "PointerLeft",
+          "x3_action": "PointerLeft"
         },
         {
           "source": "RightRight",
@@ -1792,7 +1935,8 @@
           "short": "Mouse",
           "key": "PointerRight",
           "key_display": "Mouse",
-          "v2_action": "PointerRight"
+          "v2_action": "PointerRight",
+          "x3_action": "PointerRight"
         }
       ]
     }

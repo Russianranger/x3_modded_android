@@ -1,0 +1,54 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'io.github.russianranger.x3'
+    buildFeatures { buildConfig true }
+    compileSdk 35
+    defaultConfig {
+        applicationId 'io.github.russianranger.x3'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0-preview'
+        ndk { abiFilters 'arm64-v8a' }
+    }
+    signingConfigs {
+        // Shared preview key (see signing/README.md) so each CI build installs over the last.
+        preview {
+            storeFile rootProject.file('signing/x3-preview.keystore')
+            storePassword 'android'
+            keyAlias 'x3preview'
+            keyPassword 'android'
+        }
+    }
+    buildTypes {
+        debug { signingConfig signingConfigs.preview }
+        release { minifyEnabled false; signingConfig signingConfigs.preview }
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    // PRoot must be extracted to the native library directory: it is the only executable location.
+    packaging { jniLibs { useLegacyPackaging true; keepDebugSymbols += ['**/libproot.so', '**/libproot-loader.so'] } }
+    sourceSets {
+        main {
+            // payload/out is produced by scripts/fetch_trasc_payload.py (pinned, checksum-verified).
+            assets.srcDirs += ['../payload/out/assets', 'build-generated/assets']
+            jniLibs.srcDirs += ['../payload/out/jniLibs']
+        }
+    }
+    lint { abortOnError false; checkReleaseBuilds false }
+}
+
+// Python supervisor and generated controller data travel as assets.
+tasks.register('prepareX3Assets', Copy) {
+    into 'build-generated/assets'
+    from('../runner') { include '*.py'; into 'runner' }
+    from('../controls/generated') { include 'x3app-controller.json', 'overlay-data.json'; into 'controls' }
+}
+tasks.register('checkPayload') {
+    doLast {
+        for (String name : ['../payload/out/jniLibs/arm64-v8a/libproot.so', '../payload/out/assets/payload/vulkan-bundle.json']) {
+            if (!file(name).isFile()) throw new GradleException('Native payload missing: run python3 -I scripts/fetch_trasc_payload.py')
+        }
+    }
+}
+tasks.named('preBuild').configure { dependsOn 'prepareX3Assets', 'checkPayload' }

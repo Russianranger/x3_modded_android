@@ -6,9 +6,12 @@ on ARM64 handhelds such as the AYN Thor. The goals: working sound, faster loadin
 Winlator/GameNative, and a layered controller scheme with an on-demand help overlay. It reuses the
 runtime pieces already proven in [trasc-server-android](https://github.com/Russianranger/trasc-server-android).
 
-**Status:** design and tooling. There is no APK yet. The controller profile is validated against
-TRASC's real `ControllerInput` engine; everything that needs a device or your game files is marked
-*verify* in the docs.
+**Status:** the first app build (Route B, the Windows `X3AP.exe` through Wine + Box64 + DXVK/Turnip)
+is in [`app/`](app/). CI builds it into a rolling
+[**preview release**](https://github.com/Russianranger/x3_modded_android/releases/tag/preview). How
+to install and use it: [docs/07-app.md](docs/07-app.md). The controller profile passes on both TRASC's
+`ControllerInput` engine and the app's own copy of it. Device behaviour (load times, Turnip with X3's
+renderer, audio) is still marked *verify*.
 
 ![Flight layer help overlay](overlay/layer-1-flight.svg)
 
@@ -42,11 +45,19 @@ Sources: [docs/sources.md](docs/sources.md).
 ## Repository map
 
 ```text
+app/                            Android app (Java, no AndroidX): importer, PRoot runtime, RFB view,
+                                layered controller, help overlay, audio bridge
+runner/                         Python supervisor run inside the rootfs (x3_runner.py + TRASC helpers)
+payload/trasc-payload.lock.json SHA-256 pins for every TRASC binary the APK bundles
+scripts/fetch_trasc_payload.py  download + verify that payload into payload/out
+signing/                        public preview key (keeps updates installable over each other)
+tests/                          runner unit tests, X3 controller engine check
 controls/
   x3ap-keymap.json              action -> X3 key (edit when AP's keys differ)
   x3ap-lxxrm.profile.json       6-layer controller profile (format 3, action-based)
   generated/                    built by tools/build_controls.py: do not edit
     x3ap-lxxrm.trasc-v2.json    loads in TRASC's existing ControllerInput
+    x3app-controller.json       the app's default profile (adds numpad keys + overlay/keyboard actions)
     overlay-data.json           what the help overlay renders
     v2-compat-report.md         bindings that need the extended vocabulary
 overlay/layer-*.svg             overlay cards for each layer (also printable)
@@ -60,7 +71,7 @@ tools/
   trasc_check/                  run the profile through TRASC's real ControllerInput.java
   probe_x3_install.py           read-only inventory of an X3 install (Phase 0)
   normalize_case.py             reversible lowercase pass for Route A (dry run by default)
-docs/                           plan, dependencies, audio, controls, loading, mod prep, sources
+docs/                           plan, dependencies, audio, controls, loading, mod prep, app, sources
 ```
 
 ## Using the tools
@@ -75,6 +86,11 @@ python3 -I tools/normalize_case.py "/path/to/copy" --only addon      # Route A o
 
 ## Next steps
 
-Phase 0 in [docs/01-plan.md](docs/01-plan.md): assemble LxXRM on a PC, run the probe on it (and on a
-vanilla Linux install if you own one), and commit the reports to `reports/`. Those answers decide how
-much of Route A is worth building.
+1. Install the preview APK on the Thor and import the game folder ([docs/07-app.md](docs/07-app.md)).
+2. Launch `X3AP.exe`. If it exits at once, switch to the NoSteam executable.
+3. Turn EAX off, then export the logs from **Tools** and attach them to an issue.
+
+Those logs show where the time and the problems are. After that, the plan is a zero-copy display
+path, then a Route A spike ([docs/01-plan.md](docs/01-plan.md)).
+
+Third-party components and their sources: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

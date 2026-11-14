@@ -1,0 +1,45 @@
+{
+  "format": 1,
+  "notes": [
+    "Prebuilt native components reused from TRASC's published v0.7.0-beta release (built from trasc-server-android commit 99e8c86f).",
+    "scripts/fetch_trasc_payload.py downloads the pinned archives, checks every SHA-256 below and writes payload/out/ (git-ignored), which Gradle packages.",
+    "The client runtime (Debian arm64 + Box64 0.4.4 + Wine 10.0 WoW64) is downloaded on the device from TRASC's client-runtime-v1 release, pinned in app/build.gradle.",
+    "Corresponding sources: launcher-sources.tar.gz from the same TRASC release is republished next to every X3 APK."
+  ],
+  "sources": {
+    "trasc_apk": {
+      "url": "https://github.com/Russianranger/trasc-server-android/releases/download/v0.7.0-beta/trasc-server-android-beta-0.7.0.apk",
+      "sha256": "649ebc31c160679b8de3c889817b92609d24c385e8d27f17584dac150d0fa807",
+      "trasc_commit": "99e8c86fa2666c8d4da6c52f4b6f45160aa6d795"
+    },
+    "trasc_sources": {
+      "url": "https://github.com/Russianranger/trasc-server-android/releases/download/v0.7.0-beta/launcher-sources.tar.gz",
+      "sha256": "1dbaf70d80331eef8728177118189af3739849d906f488f17702252ebbfe6738"
+    },
+    "dxvk": {
+      "url": "https://github.com/doitsujin/dxvk/releases/download/v2.5.3/dxvk-2.5.3.tar.gz",
+      "sha256": "d8e6ef7d1168095165e1f8a98c7d5a4485b080467bb573d2a9ef3e3d79ea1eb8"
+    }
+  },
+  "files": {
+    "jniLibs/arm64-v8a/libproot.so": {"source": "trasc_apk", "member": "lib/arm64-v8a/libproot.so", "sha256": "51e08dddf51f42a182bad70ca7fa6f8cebe7589b753ef788a31af73b6227e25e"},
+    "jniLibs/arm64-v8a/libproot-loader.so": {"source": "trasc_apk", "member": "lib/arm64-v8a/libproot-loader.so", "sha256": "43161d1633dd9e174e362ddb335503a7456e2e76bbed96e3095964d9fcb7b880"},
+    "assets/payload/libasound_module_pcm_trasc.so": {"source": "trasc_apk", "member": "assets/libasound_module_pcm_trasc.so", "sha256": "532a502ed4b2035ab1b38efb5eda55d6c5e08135c0b0120d8f6ed317fc286b33"},
+    "assets/payload/audio-bundle.json": {"source": "trasc_apk", "member": "assets/audio-bundle.json", "sha256": "1f96b59d5f011d8bf8d3810b285bc989fb3507cb5ec35533f36b93eed017cb81"},
+    "assets/payload/turnip.so": {"source": "trasc_apk", "member": "assets/turnip.so", "sha256": "2984e3350d8eb1fee18edc7b0afbaed63dc42cb2de487099bdd04149b5ec65cf"},
+    "assets/payload/turnip-26.0.0.so": {"source": "trasc_apk", "member": "assets/turnip-26.0.0.so", "sha256": "3c00117f6d5d01235ccb1457c6d58e799159a4d343401e6ba16ce6c46586ac95"},
+    "assets/payload/vulkan-probe": {"source": "trasc_apk", "member": "assets/vulkan-probe", "sha256": "e5d9f6f11b471415a981d2ae7aac3566ebe7f9d687409437b15fd89aacc69d8b"},
+    "assets/payload/dxvk-d3d9.dll": {"source": "trasc_apk", "member": "assets/dxvk-d3d9.dll", "sha256": "3d6b529dc4f7f55639aad580e81b2939ab1489cdbb9f1550dce74e41656bbf5b"},
+    "assets/payload/vulkan-bundle.json": {"source": "trasc_apk", "member": "assets/vulkan-bundle.json", "sha256": "9293a0d441b64f6353c31c906d86845e2b3c6bda73795865d65a99a1e0b447ce"},
+    "assets/payload/wineserver": {"source": "trasc_apk", "member": "assets/wineserver", "sha256": "09933d17ab07fe9c79245b22c9b8f4ff3fbc42d237595bb693271d168c8cb7d3"},
+    "assets/payload/wineserver-patch.json": {"source": "trasc_apk", "member": "assets/wineserver-patch.json", "sha256": "e0dc2af26cfcda8ae57ef5a1eb26a31aa1edba9a91c554591e6a6e07fe0875fe"},
+    "assets/payload/x11-frame-bridge": {"source": "trasc_apk", "member": "assets/x11-frame-bridge", "sha256": "c7244f755d9e473a6a8931cc7d330e6a7c2efd909313b5f0cf634558562b2917"},
+    "assets/payload/presentation-bundle.json": {"source": "trasc_apk", "member": "assets/presentation-bundle.json", "sha256": "d67c2cea490d4448e5901daddd92682301bf6d6326a8bea512fde85ee1c26a74"},
+    "assets/payload/presentation-notices.txt": {"source": "trasc_apk", "member": "assets/presentation-notices.txt", "sha256": "a9f1f28b99e94873059745ef6de2bafc74bd08b58a1629de25a2fb9806cf5666"},
+    "assets/payload/dxvk-d3d9-x64.dll": {"source": "dxvk", "member": "dxvk-2.5.3/x64/d3d9.dll", "sha256": "0429fe4e1083e0c65080be46dd90e91c34d6486f78dfbef6f90275e77ef8e600"}
+  },
+  "cross_checks": [
+    {"source": "dxvk", "member": "dxvk-2.5.3/x32/d3d9.dll", "equals": "assets/payload/dxvk-d3d9.dll",
+     "why": "TRASC's bundled 32-bit DXVK must be the unmodified upstream 2.5.3 DLL"}
+  ]
+}

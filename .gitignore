@@ -2,3 +2,10 @@ __pycache__/
 *.pyc
 /trasc-server-android/
 /reports/*.tmp
+/payload/out/
+/payload/cache/
+/app/build/
+/build/
+/.gradle/
+/local.properties
+/app/build-generated/

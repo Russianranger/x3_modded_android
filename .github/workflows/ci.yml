@@ -1,0 +1,133 @@
+name: ci
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: Russianranger/trasc-server-android
+          path: trasc-server-android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Runner unit tests
+        run: python3 -I -m unittest discover -s tests -v
+      - name: Generated controller files are current
+        run: python3 -I tools/build_controls.py --check
+      - name: X3 app ControllerInput accepts the X3 profile
+        run: |
+          out=$(mktemp -d); p=app/src/main/java/io/github/russianranger/x3
+          javac -d "$out" $p/ControllerInput.java $p/DisplayInput.java tests/java/X3ControllerCheck.java
+          java -cp "$out" io.github.russianranger.x3.X3ControllerCheck controls/generated/x3app-layers.tsv
+      - name: Format-2 export works on TRASC's own ControllerInput
+        run: tools/trasc_check/run.sh trasc-server-android
+      - name: Shell scripts parse
+        run: bash -n runtime/launch-wine.sh runtime/launch-native.sh tools/trasc_check/run.sh
+
+  apk:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install pinned Android packages
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+      - name: Cache pinned payload archives
+        uses: actions/cache@v4
+        with:
+          path: payload/cache
+          key: payload-${{ hashFiles('payload/trasc-payload.lock.json') }}
+      - name: Assemble and verify the native payload
+        run: python3 -I scripts/fetch_trasc_payload.py
+      - name: Build APK
+        run: gradle --no-daemon :app:assembleDebug 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
+      - name: Surface compiler errors as annotations
+        if: failure()
+        run: grep -E "^e: |error:|\.java:[0-9]+: error" build.log | head -40 | sed 's/^/::error::/' || true
+      - name: Android lint (informational)
+        continue-on-error: true
+        run: gradle --no-daemon :app:lintDebug
+      - name: Verify the APK carries the pinned preview certificate
+        run: |
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$apk" | tee apk-signing.txt
+          actual=$(grep -oP 'Signer #1 certificate SHA-256 digest: \K[0-9a-f]+' apk-signing.txt)
+          test "$actual" = "$(cat signing/x3-preview.sha256)"
+          unzip -l "$apk" | grep -E "lib/arm64-v8a/libproot.so|assets/payload/turnip.so|assets/runner/x3_runner.py|assets/controls/overlay-data.json"
+      - name: Describe the build
+        run: |
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re
+          apk = pathlib.Path("app/build/outputs/apk/debug/app-debug.apk")
+          gradle = pathlib.Path("app/build.gradle").read_text()
+          info = {"commit": os.environ["GITHUB_SHA"], "file": "x3-modded-android-preview.apk",
+                  "sha256": hashlib.sha256(apk.read_bytes()).hexdigest(), "bytes": apk.stat().st_size,
+                  "version": re.search(r"versionName '([^']+)'", gradle).group(1),
+                  "version_code": int(re.search(r"versionCode (\d+)", gradle).group(1)),
+                  "application_id": "io.github.russianranger.x3",
+                  "signing_certificate_sha256": pathlib.Path("signing/x3-preview.sha256").read_text().strip(),
+                  "payload": json.loads(pathlib.Path("payload/out/assets/payload/payload-provenance.json").read_text())["sources"]}
+          pathlib.Path("build-info.json").write_text(json.dumps(info, indent=2) + "\n")
+          PY
+          cp "$apk" x3-modded-android-preview.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x3-modded-android-apk
+          path: |
+            x3-modded-android-preview.apk
+            build-info.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-reports
+          path: |
+            build.log
+            app/build/reports/
+
+  publish:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: apk
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x3-modded-android-apk
+      - name: Publish the rolling preview release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view preview >/dev/null 2>&1; then
+            gh release create preview --prerelease --title "X3 Modded Android preview" --notes-file docs/release-notes.md --target "$GITHUB_SHA"
+          fi
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/preview" -f sha="$GITHUB_SHA" -F force=true
+          gh release upload preview x3-modded-android-preview.apk build-info.json --clobber
+          gh release edit preview --notes-file docs/release-notes.md
+          # Corresponding sources for the reused TRASC binaries (PRoot GPL, Wine LGPL): upload once.
+          if ! gh release view preview --json assets -q '.assets[].name' | grep -qx launcher-sources.tar.gz; then
+            python3 -I scripts/fetch_trasc_payload.py --sources launcher-sources.tar.gz
+            gh release upload preview launcher-sources.tar.gz --clobber
+          fi
