@@ -30,6 +30,13 @@ image with [Box64 0.4.4](https://github.com/ptitSeb/box64/tree/2f130fab1d6e1a4ee
 corresponding sources are published with that runtime release as `client-runtime-sources.tar.gz`.
 Package licence notices are kept in `/usr/share/doc` inside the image.
 
+The optional **media add-on** (`media-addon-v1` release, downloaded on request) is
+GStreamer 1.22 from Debian Bookworm arm64: core, plugins-base, plugins-good and plugins-ugly, plus
+`mpegpsdemux` and `videoparsersbad` from plugins-bad, with their Debian dependencies. These are
+mostly LGPL-2.1-or-later. Package names and versions are listed in the release's
+`media-addon.json`, and the sources are at [sources.debian.org](https://sources.debian.org). The
+recipe is `scripts/build_media_addon.sh`.
+
 ## Code adapted from TRASC
 
 These parts of the Android app and runner are copied from TRASC, or adapted from it, with the same

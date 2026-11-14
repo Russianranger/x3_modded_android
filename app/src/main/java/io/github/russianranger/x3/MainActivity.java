@@ -27,7 +27,8 @@ public final class MainActivity extends Activity {
     private TextView statusView,runtimeView,gameView;
     private Spinner program,resolution,renderer,turnip,fps,cpu;
     private EditText arguments;
-    private CheckBox audio,hud,diagnostics,soundDiagnostics,skipArchives;
+    private CheckBox audio,hud,diagnostics,soundDiagnostics,skipArchives,passthrough;
+    private Button mediaButton;private JSONObject mediaManifest;
     private Button cancel;
     private volatile boolean operationRunning,cancelRequested;
     private volatile String operationStatus="";
@@ -52,6 +53,10 @@ public final class MainActivity extends Activity {
         LinearLayout runtimeRow=row(runtimeCard);
         button(runtimeRow,"Download runtime (338 MB)",v->operation("Runtime download",()->RuntimeInstaller.installOnline(paths,this::progress)));
         button(runtimeRow,"Install from file…",v->pick(new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"),PICK_RUNTIME));
+        mediaManifest=MediaAddon.manifest(this);
+        LinearLayout mediaRow=row(runtimeCard);
+        mediaButton=button(mediaRow,mediaManifest==null?"Media add-on unavailable in this build":"Download media add-on ("+MediaAddon.size(mediaManifest)+")",
+            v->operation("Media add-on",()->MediaAddon.install(this,paths,this::progress)));
 
         LinearLayout gameCard=card(root,"2 · Game files");
         gameView=text(gameCard,"",0xffc9d4df,14);
@@ -77,6 +82,8 @@ public final class MainActivity extends Activity {
         hud=check(launchCard,"DXVK FPS overlay",prefs.getBoolean("dxvk_hud",true));
         diagnostics=check(launchCard,"Verbose Wine logging (slower)",prefs.getBoolean("diagnostic_logging",false));
         soundDiagnostics=check(launchCard,"Sound diagnostics in logs",prefs.getBoolean("sound_diagnostics",false));
+        passthrough=check(launchCard,"Let X3 also read the gamepad itself (XInput). Off: only the app's layered controls reach the game",
+            prefs.getBoolean("controller_passthrough",false));
         select(resolution,prefs.getString("resolution","1280x720"));select(renderer,prefs.getString("renderer_label","Turnip + DXVK (Adreno GPU)"));
         select(turnip,prefs.getString("turnip_driver","24.3.4"));select(fps,prefs.getString("display_fps","60"));select(cpu,prefs.getString("cpu_profile","balanced"));
         LinearLayout launchRow=row(launchCard);
@@ -144,7 +151,8 @@ public final class MainActivity extends Activity {
                 .put("renderer",renderer.getSelectedItemPosition()==0?"turnip":"software")
                 .put("turnip_driver",String.valueOf(turnip.getSelectedItem())).put("display_fps",Integer.parseInt(String.valueOf(fps.getSelectedItem())))
                 .put("cpu_profile",String.valueOf(cpu.getSelectedItem())).put("audio",audio.isChecked()).put("dxvk_hud",hud.isChecked())
-                .put("diagnostic_logging",diagnostics.isChecked()).put("sound_diagnostics",soundDiagnostics.isChecked());
+                .put("diagnostic_logging",diagnostics.isChecked()).put("sound_diagnostics",soundDiagnostics.isChecked())
+                .put("controller_passthrough",passthrough.isChecked());
         }catch(org.json.JSONException e){return;}
         operation("Launching",()->{runtime.start(options);operationStatus="Game running";handler.post(()->startActivity(new Intent(this,GameActivity.class)));});
     }
@@ -155,7 +163,8 @@ public final class MainActivity extends Activity {
             .putString("resolution",String.valueOf(resolution.getSelectedItem())).putString("renderer_label",String.valueOf(renderer.getSelectedItem()))
             .putString("turnip_driver",String.valueOf(turnip.getSelectedItem())).putString("display_fps",String.valueOf(fps.getSelectedItem()))
             .putString("cpu_profile",String.valueOf(cpu.getSelectedItem())).putBoolean("audio",audio.isChecked()).putBoolean("dxvk_hud",hud.isChecked())
-            .putBoolean("diagnostic_logging",diagnostics.isChecked()).putBoolean("sound_diagnostics",soundDiagnostics.isChecked()).apply();
+            .putBoolean("diagnostic_logging",diagnostics.isChecked()).putBoolean("sound_diagnostics",soundDiagnostics.isChecked())
+            .putBoolean("controller_passthrough",passthrough.isChecked()).apply();
     }
 
     private JSONObject importRecord() {
@@ -174,7 +183,13 @@ public final class MainActivity extends Activity {
 
     private void refresh() {
         boolean installed=RuntimeInstaller.installed(paths);
-        runtimeView.setText(installed?"Installed: Debian arm64 · Box64 0.4.4 · Wine 10.0 WoW64 (TRASC client runtime v1)":"Not installed. Download it once (about 338 MB, needs ~1.5 GB free while unpacking).");
+        String media=MediaAddon.installedVersion(paths);boolean mediaCurrent=MediaAddon.current(paths,mediaManifest);
+        runtimeView.setText((installed?"Installed: Debian arm64 · Box64 0.4.4 · Wine 10.0 WoW64 (TRASC client runtime v1)":"Not installed. Download it once (about 338 MB, needs ~1.5 GB free while unpacking).")
+            +(!installed?"":mediaCurrent?"\nMedia add-on: installed ("+media+") · music, voices and movies enabled"
+                :media!=null?"\nMedia add-on: "+media+" installed; this build expects "+mediaManifest.optString("version")+" (download to update)"
+                :"\nMedia add-on: not installed · only sound effects play (music, voices and movies need it)"));
+        if(mediaButton!=null){mediaButton.setEnabled(installed&&mediaManifest!=null&&!mediaCurrent&&!operationRunning);
+            if(mediaCurrent)mediaButton.setText("Media add-on installed ✓");}
         JSONObject record=importRecord();
         if(paths.game.isDirectory()&&record.length()>0){
             StringBuilder text=new StringBuilder(String.format(Locale.ROOT,"Imported: %d files · %.1f GB · %s",record.optInt("files"),record.optLong("bytes")/1e9,record.optString("imported_utc")));

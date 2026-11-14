@@ -109,7 +109,8 @@ final class GameRuntime {
                 .put("cpu_profile",options.optString("cpu_profile","balanced")).put("cpu_affinity","available")
                 .put("runtime_mode",options.optString("runtime_mode","auto"))
                 .put("diagnostic_logging",options.optBoolean("diagnostic_logging",false))
-                .put("sound_diagnostics",options.optBoolean("sound_diagnostics",false));
+                .put("sound_diagnostics",options.optBoolean("sound_diagnostics",false))
+                .put("controller_passthrough",options.optBoolean("controller_passthrough",false));
             transientPaths.prepare();paths.prefix.mkdirs();paths.saves.mkdirs();
             stageAssets();
             File run=transientPaths.run,tmp=transientPaths.tmp,root=paths.runtime;

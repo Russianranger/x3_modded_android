@@ -95,6 +95,28 @@ Steam's `X3AP.exe` imports `steam_api.dll`, and there is no Steam client inside 
 NoSteam `X3AP.exe`, either the one LxXRM's setup installs or Egosoft's own. The **Game files**
 card and the runner both warn when they detect the Steam executable.
 
+## Media add-on (music, voices, movies)
+
+X3 plays sound effects through DirectSound, which works without the add-on. Music, comms voices
+and movies go through DirectShow instead. In Wine 10, DirectShow's WAV, MPEG audio and AVI
+splitters and its MP3 decoder live in `winegstreamer`, which needs GStreamer.
+
+- **Evidence:** the fourth device run logged 88 failed autoplug attempts each for "Wave Parser",
+  "MPEG-I Stream Splitter" and "AVI Splitter".
+- **Install:** on the **Runtime** card, tap **Download media add-on**. It unpacks native arm64
+  GStreamer 1.22 (Debian Bookworm: base, good, ugly, plus `mpegpsdemux`) into the runtime.
+- **Effect:** the runner sees `/etc/x3-media-addon.json` and stops disabling `winegstreamer`.
+  Box64 maps `winegstreamer.so` onto the native libraries. All 206 GStreamer and GLib functions it
+  imports are among those Box64 `2f130fab` wraps, which was checked against the binary.
+- **Testing:** CI builds the add-on inside the pinned runtime image and tests three things:
+  - the required elements exist;
+  - native WAV and MP3 decodes work;
+  - an x86-64 program under the runtime's Box64 decodes both through the wrapped libraries, with
+    a callback into emulated code.
+
+  The archive is published once as the `media-addon-v1` release, and the APK pins its hash.
+- **Reinstalling the runtime** removes the add-on. Download it again afterwards.
+
 ## Controls
 
 The profile is the six-layer scheme in [04-controls.md](04-controls.md), loaded from
@@ -106,6 +128,14 @@ The profile is the six-layer scheme in [04-controls.md](04-controls.md), loaded 
 | `HelpOverlayToggle` | Select + Start | Pins or unpins the help overlay. Holding Select alone shows it while held. |
 | `TextInput` | Select + Y | Opens the Android keyboard dialog, for ship names and console text. |
 | `ClientMenu` | Select + B | Opens the gear menu. |
+
+By default, Wine's gamepad driver (`winebus.sys`) is switched off, so X3 sees only the
+keyboard and mouse input the layered profile produces. Wine can see the Thor's built-in pad (SDL2
+and udev), and X3 AP reads it through XInput with its own bindings. In the fourth device run, that
+doubled actions and made the ship turn and accelerate on its own.
+
+The launcher option **Let X3 also read the gamepad itself** turns Wine's gamepad driver back on.
+Use it only with the app's controller profile cleared.
 
 The keyboard can also send numpad and Pause keys (`NumpadEnter`, `Numpad0`–`9`, `NumpadAdd` and so
 on), because X3 binds several actions to them.
@@ -151,12 +181,8 @@ python3 -I -m unittest discover -s tests -v
 
 - **Display:** frames come over RFB only. TRASC's native presentation library is tied to TRASC's
   package name, so its zero-copy path is not available yet.
-- **Music, comms voices and movies:** X3 plays these through DirectShow, and in Wine 10 DirectShow
-  decodes through `winegstreamer`. The TRASC runtime has no GStreamer, so `winegstreamer` is off.
-  Until a GStreamer add-on for the runtime exists, expect sound effects (DirectSound) but possibly
-  no music, voices or movies. A Wine report on X3: Reunion found that the videos and the radio
-  chatter need GStreamer plugins
-  ([bug 55738](https://bugs.winehq.org/show_bug.cgi?id=55738)).
+- **Music, comms voices and movies** need the media add-on (see below). Without it, only sound
+  effects play.
 - **Route A** (native Linux `X3AP_main` via BOX32) is not wired into the app.
 
 ## Device runs
@@ -245,3 +271,23 @@ CPU, until the session was stopped.
   `dxvk_present_mode`.
 - Thread samples now record each sleeping thread's kernel wait channel and syscall, when Android
   allows reading them. A future hang will show what the threads are waiting on.
+
+### 14 November 2026, AYN Thor, build 0.1.4
+
+**What worked:** X3 booted and reached gameplay at about 31 fps (median of Wine's present
+counter). The present mode was IMMEDIATE, the frame cap 60, and audio ran through AudioTrack at
+48 kHz.
+
+**Problems:**
+
+- **Only sound effects played.** DirectShow could not build a graph without `winegstreamer`. The
+  media add-on fixes this.
+- **Doubled inputs, and the ship turning and accelerating by itself.** `winexinput.sys` was
+  loaded, so Wine had found the built-in pad. X3 read it through XInput on top of the app's
+  mappings. Fixed in 0.1.5 by switching off `winebus.sys`, with an opt-in option to turn it back
+  on.
+- **The new game took about 3 minutes to load.** Most of that was crypto DLL churn: X3 opened and
+  closed a CryptoAPI context 1,473 times while loading, apparently once per script it checks.
+  Each cycle loaded and unloaded `rsaenh`, `crypt32` and `bcrypt`, together with their emulated
+  Unix libraries and wrapped GnuTLS, at about 100–130 ms per cycle. Keeping those DLLs loaded for
+  the life of the process would remove most of the delay. That fix is planned next.

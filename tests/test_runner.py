@@ -206,13 +206,37 @@ class FirstDeviceRunTests(unittest.TestCase):
             (task / "syscall").unlink()
             self.assertEqual(client_metrics.blocked_in(task), {})
 
+    def overrides(self, value):
+        parsed = {}
+        for group in value.split(";"):
+            names, _, setting = group.partition("=")
+            parsed.update({name: setting for name in names.split(",")})
+        return parsed
+
     def test_codec_that_needs_gstreamer_is_disabled(self):
-        overrides = {}
-        for group in x3_runner.DLL_OVERRIDES.split(";"):
-            names, _, value = group.partition("=")
-            overrides.update({name: value for name in names.split(",")})
-        self.assertEqual(overrides["ir50_32"], "")
-        self.assertEqual(overrides["winegstreamer"], "")
+        for addon in (False, True):
+            self.assertEqual(self.overrides(x3_runner.dll_overrides(media_addon=addon))["ir50_32"], "")
+        self.assertEqual(self.overrides(x3_runner.dll_overrides())["winegstreamer"], "")
+        self.assertNotIn("winegstreamer", self.overrides(x3_runner.dll_overrides(media_addon=True)))
+
+    def test_wine_keeps_its_hands_off_the_gamepad_by_default(self):
+        # Fourth Thor run: X3 read the pad through XInput as well as the app's mappings.
+        self.assertEqual(self.overrides(x3_runner.dll_overrides())["winebus.sys"], "")
+        self.assertNotIn("winebus.sys", self.overrides(x3_runner.dll_overrides(controller_passthrough=True)))
+        with self.assertRaisesRegex(ValueError, "controller_passthrough"):
+            x3_runner.validate_request(dict(mode="game", program="X3AP.exe", resolution="1280x720", controller_passthrough=1))
+
+    def test_media_addon_manifest_and_gstreamer_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "x3-media-addon.json"
+            self.assertIsNone(x3_runner.media_addon(marker))
+            marker.write_text('{"format": 1, "version": "media-addon-v1", "sha256": "ab"}')
+            self.assertEqual(x3_runner.media_addon(marker)["version"], "media-addon-v1")
+            marker.write_text("not json")
+            self.assertIsNone(x3_runner.media_addon(marker))
+        env = x3_runner.gstreamer_environment(Path("/prefix"))
+        self.assertEqual(env["GST_PLUGIN_SYSTEM_PATH_1_0"], "/usr/lib/aarch64-linux-gnu/gstreamer-1.0")
+        self.assertTrue(env["GST_REGISTRY_1_0"].startswith("/prefix/x3-cache/"))
 
     def test_game_process_found_by_launch_marker(self):
         with tempfile.TemporaryDirectory() as tmp:

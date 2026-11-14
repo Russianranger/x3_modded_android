@@ -63,8 +63,59 @@ jobs:
           name: box64
           path: box64-out/
 
+  media:
+    # GStreamer add-on for winegstreamer (X3's music, voices, movies). Built once per recipe version
+    # on the pinned runtime image, tested there, then reused from its release.
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      built: ${{ steps.published.outputs.found != 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reuse the published add-on
+        id: published
+        run: |
+          mkdir -p media-out
+          tag=$(grep -oP '^version=\K\S+' scripts/build_media_addon.sh)
+          if curl -fsSL -o media-out/media-addon.json "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/media-addon.json"; then
+            echo "found=true" >> "$GITHUB_OUTPUT"; cat media-out/media-addon.json
+          else
+            rm -f media-out/media-addon.json; echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build and test the add-on inside the pinned runtime
+        if: steps.published.outputs.found != 'true'
+        run: |
+          curl -fsSL --retry 3 -o runtime.tar.gz https://github.com/Russianranger/trasc-server-android/releases/download/client-runtime-v1/client-runtime-arm64.tar.gz
+          echo "2f130c07683e50bc606af111d5c35c4f503c1427772c1f9b0f45e1e4b75c76c4  runtime.tar.gz" | sha256sum -c -
+          docker import runtime.tar.gz x3-runtime:v1 && rm runtime.tar.gz
+          docker run --rm -v "$PWD:/repo:ro" -v "$PWD/media-out:/out" x3-runtime:v1 bash /repo/scripts/build_media_addon.sh /out
+          ls -la media-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media-addon
+          path: media-out/
+
+  media-publish:
+    if: needs.media.outputs.built == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: media
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: media-addon
+          path: media-out
+      - name: Publish the add-on release (once per recipe version)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(grep -oP '^version=\K\S+' scripts/build_media_addon.sh)
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Media add-on ($tag): GStreamer for music, voices and movies" --notes-file docs/media-addon-notes.md --target "$GITHUB_SHA"
+          gh release upload "$tag" media-out/media-addon-arm64.tar.gz media-out/media-addon.json
+
   apk:
-    needs: [test, box64]
+    needs: [test, box64, media]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -72,6 +123,10 @@ jobs:
         with:
           name: box64
           path: box64-out
+      - uses: actions/download-artifact@v4
+        with:
+          name: media-addon
+          path: media-out
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -90,7 +145,9 @@ jobs:
           path: payload/cache
           key: payload-${{ hashFiles('payload/trasc-payload.lock.json') }}
       - name: Assemble and verify the native payload
-        run: python3 -I scripts/fetch_trasc_payload.py --box64 box64-out
+        run: |
+          python3 -I scripts/fetch_trasc_payload.py --box64 box64-out
+          cp media-out/media-addon.json payload/out/assets/payload/media-addon.json
       - name: Build APK
         run: gradle --no-daemon :app:assembleDebug 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
       - name: Surface compiler errors as annotations
@@ -142,8 +199,8 @@ jobs:
             app/build/reports/
 
   publish:
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: apk
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !failure() && !cancelled()
+    needs: [apk, media-publish]
     runs-on: ubuntu-latest
     permissions:
       contents: write

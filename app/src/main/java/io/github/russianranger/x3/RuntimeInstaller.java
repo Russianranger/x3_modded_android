@@ -35,7 +35,7 @@ final class RuntimeInstaller {
         File archive=new File(paths.cache,"client-runtime-offline.tar.gz");
         try {
             progress.update("Copying runtime archive…");
-            copy(source,archive,BYTES+1024*1024,progress,"Copying runtime archive");
+            copy(source,archive,BYTES+1024*1024,BYTES,progress,"Copying runtime archive");
             progress.update("Verifying runtime archive…");
             if(!SHA256.equalsIgnoreCase(sha256(archive)))throw new IOException("This is not the pinned client-runtime-arm64.tar.gz (checksum mismatch)");
             activate(paths,archive,progress);
@@ -64,6 +64,11 @@ final class RuntimeInstaller {
     }
 
     private static void download(String address,File target,Progress progress)throws Exception {
+        download(address,target,BYTES,"Downloading runtime",progress);
+    }
+
+    /** HTTPS download of a file of known size (redirects followed, size enforced). */
+    static void download(String address,File target,long bytes,String label,Progress progress)throws Exception {
         URL url=new URL(address);HttpURLConnection connection=null;
         for(int redirect=0;redirect<6;redirect++) {
             if(!url.getProtocol().equals("https"))throw new IOException("HTTPS is required");
@@ -73,24 +78,25 @@ final class RuntimeInstaller {
             if(code>=300&&code<400){String location=connection.getHeaderField("Location");connection.disconnect();url=new URL(url,location);continue;}
             if(code!=200){connection.disconnect();throw new IOException("Download returned HTTP "+code+". Try again, or install the archive from a file.");}
             long size=connection.getContentLengthLong();
-            if(size>0&&size!=BYTES){connection.disconnect();throw new IOException("Unexpected runtime size "+size);}
-            try(InputStream in=connection.getInputStream()){copy(in,target,BYTES,progress,"Downloading runtime");}
+            if(size>0&&size!=bytes){connection.disconnect();throw new IOException("Unexpected download size "+size+" (expected "+bytes+")");}
+            try(InputStream in=connection.getInputStream()){copy(in,target,bytes,bytes,progress,label);}
             finally{connection.disconnect();}
             return;
         }
         throw new IOException("Too many download redirects");
     }
 
-    private static void copy(InputStream in,File target,long limit,Progress progress,String label)throws IOException {
+    private static void copy(InputStream in,File target,long limit,long expected,Progress progress,String label)throws IOException {
         target.getParentFile().mkdirs();
-        if(target.getParentFile().getUsableSpace()<BYTES*3+512L*1024*1024)throw new IOException("Not enough free storage: about 1.5 GB is needed to download and unpack the runtime");
+        if(target.getParentFile().getUsableSpace()<expected*3+512L*1024*1024)
+            throw new IOException(String.format(Locale.ROOT,"Not enough free storage: about %d MB is needed to download and unpack this",(expected*3>>20)+512));
         long done=0,reported=0;
         try(OutputStream out=new FileOutputStream(target)) {
             byte[] b=new byte[1024*1024];int n;
             while((n=in.read(b))!=-1){
-                done+=n;if(done>limit)throw new IOException("Runtime archive is larger than expected");
+                done+=n;if(done>limit)throw new IOException("Download is larger than expected");
                 out.write(b,0,n);
-                if(done-reported>=8L*1024*1024){reported=done;progress.update(String.format(Locale.ROOT,"%s · %d / %d MB",label,done>>20,BYTES>>20));}
+                if(done-reported>=8L*1024*1024){reported=done;progress.update(String.format(Locale.ROOT,"%s · %d / %d MB",label,done>>20,expected>>20));}
             }
         }
     }

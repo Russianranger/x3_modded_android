@@ -62,12 +62,44 @@ def archive_log(path, limit=WINE_LOG_LIMIT):
     rotate(path, limit)
 
 
-# winegstreamer is off: the runtime ships no GStreamer, so its Unix side cannot load anyway.
-# ir50_32 (Wine's Indeo 5 codec) delay-loads winegstreamer_create_video_decoder when it is opened,
-# and Wine aborts the whole process when that delay load fails. X3AP.exe sets up DirectShow at
-# start-up; devenum opens every installed video codec to list it, reaches ir50_32 and X3 dies with
-# a black screen (first device run, Nov 2026). Disabling ir50_32 just drops it from that list.
-DLL_OVERRIDES = 'winemenubuilder,mscoree,mshtml,winegstreamer,ir50_32='
+MEDIA_ADDON = Path('/etc/x3-media-addon.json')   # written by the app after it unpacks the add-on
+GST_ROOT = '/usr/lib/aarch64-linux-gnu'
+
+
+def dll_overrides(media_addon=False, controller_passthrough=False):
+    """WINEDLLOVERRIDES for every Wine process of the session (prefix setup included).
+
+    winegstreamer: X3 plays music, comms voices and movies through DirectShow, which in Wine 10
+    decodes through winegstreamer. Without the media add-on there is no GStreamer, so its Unix side
+    cannot load and it stays off. With the add-on Box64 maps it onto native arm64 GStreamer.
+    ir50_32: Wine's Indeo 5 codec delay-loads winegstreamer_create_video_decoder when opened and
+    Wine aborts the process if that fails; X3's DirectShow set-up opens every codec (first device
+    run). It stays off either way: decoding Indeo needs gst-libav, which the add-on leaves out.
+    winebus.sys: Wine finds the Thor's built-in pad (SDL2/udev) and X3 AP reads it through XInput
+    on top of the app's key and mouse mappings: doubled actions, and the ship turning and
+    accelerating on its own (fourth device run). Off unless the launcher asks for passthrough.
+    """
+    disabled = ['winemenubuilder', 'mscoree', 'mshtml', 'ir50_32']
+    if not media_addon: disabled.append('winegstreamer')
+    if not controller_passthrough: disabled.append('winebus.sys')
+    return ','.join(disabled) + '='
+
+
+def media_addon(path=MEDIA_ADDON):
+    """The installed add-on's manifest, or None."""
+    try:
+        manifest = json.loads(path.read_text()) if path.is_file() and path.stat().st_size < 65536 else None
+    except (OSError, ValueError):
+        return None
+    return manifest if isinstance(manifest, dict) and manifest.get('format') == 1 else None
+
+
+def gstreamer_environment(prefix=PREFIX, diagnostic=False):
+    """Native arm64 GStreamer as winegstreamer.so (x86-64, under Box64) sees it."""
+    return {'GST_PLUGIN_SYSTEM_PATH_1_0': GST_ROOT + '/gstreamer-1.0',
+            'GST_PLUGIN_SCANNER_1_0': GST_ROOT + '/gstreamer1.0/gstreamer-1.0/gst-plugin-scanner',
+            'GST_REGISTRY_1_0': str(prefix / 'x3-cache' / 'gstreamer-registry.aarch64.bin'),
+            'GST_DEBUG': '2' if diagnostic else '1', 'GST_DEBUG_NO_COLOR': '1'}
 GAME_START_GRACE = 150     # seconds after launch before a missing game process is reported
 GAME_EXIT_SAMPLES = 2      # consecutive 10 s samples without the game after it was running
 WINE_PROCESS = re.compile(r'(?:^wineserver$|\.exe$)', re.I)
@@ -272,7 +304,7 @@ def validate_request(request, game=GAME):
     if request.get('cpu_affinity', 'available') not in ('available', 'game'): raise ValueError('Unsupported CPU affinity')
     if request.get('runtime_mode', 'auto') not in ('auto', 'compatibility'): raise ValueError('Unsupported runtime mode')
     client_presentation.options(request)
-    for key in ('audio', 'dxvk_hud', 'diagnostic_logging', 'sound_diagnostics', 'vsync'):
+    for key in ('audio', 'dxvk_hud', 'diagnostic_logging', 'sound_diagnostics', 'vsync', 'controller_passthrough'):
         if not isinstance(request.get(key, False), bool): raise ValueError('Invalid option: ' + key)
     arguments = request.get('arguments', [])
     if (not isinstance(arguments, list) or len(arguments) > 32
@@ -324,13 +356,18 @@ class Supervisor:
                        'runtime_acceleration': request.get('runtime_acceleration', 'unspecified')}
         self.env = dict(os.environ, DISPLAY=':7', XAUTHORITY=str(SESSION / 'Xauthority'),
                         WINEPREFIX=str(PREFIX), WINEARCH='win64', WINEDEBUG=wine_debug(),
-                        WINEDLLOVERRIDES=DLL_OVERRIDES,
+                        WINEDLLOVERRIDES=dll_overrides(media_addon() is not None, request.get('controller_passthrough', False)),
                         BOX64_DYNAREC_STRONGMEM='1', BOX64_DYNAREC_BIGBLOCK='2', BOX64_DYNAREC_SAFEFLAGS='1',
                         BOX64_MAXCPU='0', BOX64_RCFILE=str(SESSION / 'box64.rc'),
                         BOX64_LOG='1', BOX64_NOBANNER='0', BOX64_PATH='/opt/wine/bin',
                         BOX64_LD_LIBRARY_PATH='/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu:/opt/wine/lib/wine/x86_64-unix',
                         LIBGL_ALWAYS_SOFTWARE='1', GALLIUM_DRIVER='llvmpipe', LP_NUM_THREADS='4',
                         WINE_D3D_CONFIG='csmt=1', **{LAUNCH_ENV: self.launch_token})
+        self.status['controller_passthrough'] = request.get('controller_passthrough', False)
+        addon = media_addon()
+        self.status['media_addon'] = {k: addon.get(k) for k in ('version', 'sha256')} if addon else None
+        if addon:
+            self.env.update(gstreamer_environment(diagnostic=request.get('diagnostic_logging', False)))
         if (HERE / 'wineserver-patch.json').is_file():
             # Wine 10 prefers its adjacent binary; the app binds the verified helper over it.
             self.env['WINESERVER'] = '/opt/wine/bin/wineserver'
@@ -462,7 +499,7 @@ class Supervisor:
         self.update(renderer='WineD3D / ' + (match[1].strip() if match else 'unknown'), graphics_acceleration='software')
 
     def start(self):
-        for p in (SESSION, PREFIX, LOGS, SAVES): p.mkdir(parents=True, exist_ok=True)
+        for p in (SESSION, PREFIX, LOGS, SAVES, PREFIX / 'x3-cache'): p.mkdir(parents=True, exist_ok=True)
         info = validate_request(self.request)
         self.update(program_info=info)
         if info.get('steam_api'):

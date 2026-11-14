@@ -24,6 +24,30 @@ final class TarExtractor {
         extract(archive,root,progress,MAX_BYTES);
     }
     static void extract(File archive,File root,Progress progress,long maxBytes) throws Exception {
+        extract(archive,root,progress,maxBytes,false);
+    }
+    /**
+     * Overlay mode (the media add-on over an installed runtime): an existing file or symlink at an
+     * entry's path is replaced, never written through, and an existing directory or directory
+     * symlink is kept. Only regular files and symlinks are accepted; the final path component is
+     * not resolved, so a guest symlink is replaced rather than followed.
+     */
+    static void overlay(File archive,File root,Progress progress,long maxBytes) throws Exception {
+        extract(archive,root,progress,maxBytes,true);
+    }
+    static File entry(File root,String name) throws IOException {
+        while(name.endsWith("/"))name=name.substring(0,name.length()-1);
+        int slash=name.lastIndexOf('/');String last=name.substring(slash+1);
+        if(last.isEmpty()||last.equals(".")||last.equals(".."))throw new IOException("Unsafe archive path");
+        File parent=slash<0?root.getCanonicalFile():path(root,name.substring(0,slash));
+        return new File(parent,last);
+    }
+    private static void replace(File dest)throws IOException {
+        Path at=dest.toPath();
+        if(Files.isDirectory(at,LinkOption.NOFOLLOW_LINKS))throw new IOException("Add-on would replace a directory: "+dest.getName());
+        Files.deleteIfExists(at);
+    }
+    private static void extract(File archive,File root,Progress progress,long maxBytes,boolean overlay) throws Exception {
         if(maxBytes<0||maxBytes>MAX_BYTES)throw new IOException("Invalid runtime extraction limit");
         List<String[]> links=new ArrayList<>(); long total=0; int count=0; String longName=null,longLink=null;
         try(InputStream in=new BufferedInputStream(new GZIPInputStream(new FileInputStream(archive)),1024*1024)) {
@@ -45,7 +69,13 @@ final class TarExtractor {
                     if(type=='L')longName=extended;else longLink=extended;
                 } else {
                     if(longName!=null){name=longName;longName=null;} if(longLink!=null){link=longLink;longLink=null;}
-                    File dest=path(root,name);
+                    File dest=overlay?entry(root,name):path(root,name);
+                    if(overlay&&type!='0'&&type!='\0'&&type!='2'&&type!='5')throw new IOException("Unsupported add-on tar member (type "+type+")");
+                    if(overlay&&type=='2'){replace(dest);dest.getParentFile().mkdirs();
+                        if(link.isEmpty()||link.indexOf('\0')>=0)throw new IOException("Invalid symlink");
+                        Os.symlink(link,dest.getPath());skip(in,(512-size%512)%512);continue;}
+                    if(overlay&&type=='5'){if(!Files.exists(dest.toPath(),LinkOption.NOFOLLOW_LINKS))dest.mkdirs();skip(in,(512-size%512)%512);continue;}
+                    if(overlay&&(type=='0'||type=='\0'))replace(dest);
                     if(type=='0'||type=='\0') {
                         if(size>root.getUsableSpace()-128L*1024*1024)throw new IOException("Not enough storage to unpack runtime");
                         dest.getParentFile().mkdirs();
