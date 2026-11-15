@@ -63,20 +63,19 @@ PRoot rootfs (TRASC client runtime)
      whether the exe is Large Address Aware.
 4. Launch the game:
    - Pick `X3AP.exe` and a resolution, then tap **Launch**.
-   - The defaults are Turnip 24.3.4, the **fast** CPU profile, `-skipintro` and a 1280×720 Wine
-     desktop.
+   - The defaults are Turnip 24.3.4, the **balanced** CPU profile, `-skipintro` and a 1280×720
+     Wine desktop.
    - The first launch creates the Wine prefix, so it takes longer than later ones.
    - **CPU emulation** sets Box64's code translator for X3AP.exe only:
-     - **fast** (default): Box64's own "fast" profile. Bigger translated blocks that also cover
-       Windows code, no re-translation of code that shares a page with data being written, and
-       lighter flag and call/return handling. The x86 memory-ordering barriers stay on.
-     - **fastest**: the same without those barriers.
-     - **balanced**: the 0.1.6 settings.
+     - **balanced** (default): the settings every Thor run since 0.1.1 has used.
+     - **fast** (experiment): bigger translated blocks that also cover Windows code, and direct
+       call/return. Flag handling and code-change detection stay as in balanced.
+     - **fastest** (experiment): fast without the x86 memory-ordering barriers.
      - **accurate**: balanced plus exact x87 and rounding.
 
-     If X3 crashes or misbehaves on fast or fastest, go back to balanced.
-   - **Keep X3's main thread on the fastest CPU core** (on by default) asks Android's scheduler for
-     the biggest core at full clock (`uclamp.min`), for the thread that does all of a load.
+     If X3 hangs on fast or fastest, go back to balanced. The runner warns when X3's main thread
+     has used a full core for a minute without any system call or page fault, which is what the
+     0.1.7 hang looked like.
    - The in-game status line shows **last load N s**: the last stretch without a frame, taken from
      Wine's present trace. It's the number to compare between profiles.
 5. In X3's own settings, turn **EAX off**. Pick a resolution that matches the Wine desktop.
@@ -408,8 +407,8 @@ counter). The present mode was IMMEDIATE, the frame cap 60, and audio ran throug
   video is now converted per frame instead of reconnecting. Where it can't be converted, it fails
   cleanly with both sides still connected. See "Patched Wine DLLs".
 - **Load time:**
-  - CPU profiles **fast** (new default) and **fastest**, written into X3AP.exe's Box64 section.
-  - The main-thread core boost.
+  - CPU profiles **fast** (default) and **fastest**, written into X3AP.exe's Box64 section.
+  - A request to Android to keep the main thread on the biggest core (`uclamp.min`).
   - **last load N s** in the status line and `present_pauses_seconds` in `x3-state.json`.
   - `x3-threads.log` now records the main thread's user and system time, page faults and time
     spent waiting for a CPU.
@@ -420,3 +419,35 @@ counter). The present mode was IMMEDIATE, the frame cap 60, and audio ran throug
   - `x3-audio.log` reports peak and RMS levels per interval, so silence and quiet music can be
     told apart.
   - The survey tells MPEG program streams from elementary video streams.
+
+### 14 November 2026, AYN Thor, build 0.1.7
+
+**What happened:** X3's launcher came up, but after it the screen stayed black until the run was
+stopped 155 s later.
+
+- X3 created its D3D9 device and presented one frame. Then its main thread ran at 100 % of a core
+  for two minutes. Its system time and page-fault count didn't move once in that time, and its
+  other threads and wineserver slept.
+- In the 0.1.6 run, X3 set up DirectSound half a second after that same first frame. This time
+  Wine logged nothing more at all, and amstream and the media add-on were not loaded yet. So the
+  stall came before any of 0.1.7's media changes ran.
+- What did change at that point was the CPU profile. 0.1.7's default **fast** was Box64's own
+  "fast" profile: on top of bigger blocks and direct call/return, it treats CALL/RET as never
+  needing flags (`SAFEFLAGS=0`) and keeps running translated code whose page was written to
+  (`DIRTY=1`). Either can leave a loop that never ends.
+- **Other results:**
+  - The `uclamp.min` request was refused (`EPERM`): Android doesn't let an app raise its own
+    threads' clamp.
+  - `x3pin` reported through its log file this time (`crypto_pin` 3/3).
+  - Add-on v2 and both amstream patches were installed and verified.
+  - The survey showed the comms faces are MPEG-1 program streams (15 in `mov`, 2 in
+    `addon/mov`), plus 2 elementary streams.
+
+**Changes in 0.1.8:**
+
+- **balanced** is the default again. The saved profile choice starts over, so the 0.1.7 **fast**
+  pick doesn't carry over.
+- **fast** no longer includes `SAFEFLAGS=0` and `DIRTY=1`. It only builds bigger blocks with direct
+  call/return. Both fast profiles are marked as experiments.
+- The runner warns about a main thread that spins without kernel work (`main_thread_spinning`).
+- The `uclamp.min` request and its launcher option are gone.

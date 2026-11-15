@@ -100,7 +100,7 @@ class RequestTests(unittest.TestCase):
     def test_cpu_profiles_are_validated(self):
         for profile in ("fast", "fastest", "balanced", "accurate"):
             x3_runner.validate_request(dict(self.request, cpu_profile=profile), self.game)
-        for key, value in (("cpu_profile", "turbo"), ("boost_main_thread", "yes")):
+        for key, value in (("cpu_profile", "turbo"), ("controller_passthrough", "yes")):
             with self.assertRaises(ValueError, msg=key):
                 x3_runner.validate_request(dict(self.request, **{key: value}), self.game)
 
@@ -323,14 +323,32 @@ class LoadTimeTests(unittest.TestCase):
         rc = x3_runner.box64_rc("X3AP.exe", "fast")
         section = rc.split("[X3AP.exe]\n", 1)[1]
         self.assertIn("BOX64_DYNAREC_BIGBLOCK=3\n", section)
-        self.assertIn("BOX64_DYNAREC_DIRTY=1\n", section)
+        self.assertIn("BOX64_DYNAREC_CALLRET=1\n", section)
+        # Seventh Thor run: SAFEFLAGS=0 + DIRTY=1 (Box64's own "fast") hung X3 at startup.
+        self.assertIn("BOX64_DYNAREC_SAFEFLAGS=1\n", section)
+        self.assertNotIn("DIRTY", rc)
         self.assertIn("BOX64_DYNAREC_STRONGMEM=1\n", section)
         self.assertIn("BOX64_DYNAREC_STRONGMEM=0\n", x3_runner.box64_rc("X3AP.exe", "fastest"))
         self.assertIn("[wine]\nBOX64_MAXCPU=0\n", rc)
         self.assertIn("BOX64_DYNAREC_BIGBLOCK=2\nBOX64_DYNAREC_SAFEFLAGS=1\nBOX64_DYNAREC_STRONGMEM=1\n",
                       x3_runner.box64_rc("X3AP.exe", "balanced"))
         self.assertTrue(x3_runner.box64_rc("x3 ap;rm.exe", "fast").count("[x3aprm.exe]") == 1)
-        self.assertEqual(x3_runner.DEFAULT_CPU_PROFILE, "fast")
+        self.assertEqual(x3_runner.DEFAULT_CPU_PROFILE, "balanced")
+
+    def test_spinning_main_thread_is_noticed(self):
+        # The 0.1.7 hang: +1013 user ticks per 10 s, system ticks and faults frozen.
+        watch = x3_runner.SpinWatch()
+        results = [watch.observe({"user_ticks": 792 + 1013 * i, "system_ticks": 115, "minor_faults": 68481}, 10.1)
+                   for i in range(8)]
+        self.assertEqual(results, [False] * 6 + [True, True])
+        # A load: busy too, but its page faults move.
+        watch = x3_runner.SpinWatch()
+        self.assertFalse(any(watch.observe({"user_ticks": 1000 * i, "system_ticks": 100, "minor_faults": 5000 + 40 * i}, 10)
+                             for i in range(12)))
+        # An idle menu thread is not busy.
+        watch = x3_runner.SpinWatch()
+        self.assertFalse(any(watch.observe({"user_ticks": 540 * i, "system_ticks": 9, "minor_faults": 7}, 10)
+                             for i in range(12)))
 
     def test_present_pauses_measure_loads(self):
         log = x3_runner.WineLog(Path(tempfile.gettempdir()) / "unused.log", game=True)
@@ -345,11 +363,6 @@ class LoadTimeTests(unittest.TestCase):
         match = x3_runner.X3PIN_SUMMARY.search("x3pin: 3 of 3 DLLs pinned (program idle)\n")
         self.assertEqual(match.groups(), ("3", "3", "program idle"))
         self.assertTrue(x3_runner.X3PIN_LOG.name == "x3pin.log")
-
-    def test_boost_never_raises(self):
-        result = x3_runner.boost_thread(os.getpid(), util_min=0)
-        self.assertIn("ok", result)
-        self.assertFalse(x3_runner.boost_thread(2 ** 22 + 12345)["ok"])   # no such thread
 
 class SavesTests(unittest.TestCase):
     """X3's Documents\\Egosoft must end up in /saves, whatever Wine did with Documents."""

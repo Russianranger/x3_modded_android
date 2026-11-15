@@ -24,7 +24,6 @@ import shutil
 import signal
 import struct
 import subprocess
-import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -111,20 +110,24 @@ def gstreamer_environment(prefix=PREFIX, diagnostic=False):
             'GST_REGISTRY_1_0': str(prefix / 'x3-cache' / 'gstreamer-registry.aarch64.bin'),
             'GST_DEBUG': '2' if diagnostic else '1', 'GST_DEBUG_NO_COLOR': '1'}
 # Box64 dynarec settings for the game's process ([X3AP.exe] section of the session rc file; an rc
-# section overrides the environment). The CPU-bound part of a load is X3's own code, so these
-# decide most of the menu-to-game time. "fast" and "fastest" are Box64's own profiles of those
-# names (src/tools/env.c, BOX64_PROFILE); BIGBLOCK=3 is the one that reaches PE (Wine) code at all,
-# DIRTY=1 avoids re-translating code that shares a page with data that is being written.
+# section overrides the environment). The CPU-bound part of a load is X3's own code.
+# Seventh Thor run (0.1.7): Box64's own "fast" profile (SAFEFLAGS=0 and DIRTY=1 on top of the
+# settings below) hung X3 right after it created its D3D9 device. The main thread spun at 100 %
+# user time with no system call, page fault or frame for two minutes. "fast" here keeps
+# balanced's flag handling and code-change detection and only builds bigger blocks (BIGBLOCK=3 is
+# the level that reaches PE code) with direct call/return. It stays an experiment until a Thor
+# run confirms it.
 CPU_PROFILES = {
-    'fast': {'BOX64_DYNAREC_BIGBLOCK': '3', 'BOX64_DYNAREC_CALLRET': '1', 'BOX64_DYNAREC_SAFEFLAGS': '0',
-             'BOX64_DYNAREC_STRONGMEM': '1', 'BOX64_DYNAREC_DIRTY': '1', 'BOX64_DYNAREC_FORWARD': '1024'},
-    'fastest': {'BOX64_DYNAREC_BIGBLOCK': '3', 'BOX64_DYNAREC_CALLRET': '1', 'BOX64_DYNAREC_SAFEFLAGS': '0',
-                'BOX64_DYNAREC_STRONGMEM': '0', 'BOX64_DYNAREC_DIRTY': '1', 'BOX64_DYNAREC_FORWARD': '1024'},
     'balanced': {'BOX64_DYNAREC_BIGBLOCK': '2', 'BOX64_DYNAREC_SAFEFLAGS': '1', 'BOX64_DYNAREC_STRONGMEM': '1'},
+    'fast': {'BOX64_DYNAREC_BIGBLOCK': '3', 'BOX64_DYNAREC_CALLRET': '1', 'BOX64_DYNAREC_FORWARD': '1024',
+             'BOX64_DYNAREC_SAFEFLAGS': '1', 'BOX64_DYNAREC_STRONGMEM': '1'},
+    'fastest': {'BOX64_DYNAREC_BIGBLOCK': '3', 'BOX64_DYNAREC_CALLRET': '1', 'BOX64_DYNAREC_FORWARD': '1024',
+                'BOX64_DYNAREC_SAFEFLAGS': '1', 'BOX64_DYNAREC_STRONGMEM': '0'},
     'accurate': {'BOX64_DYNAREC_BIGBLOCK': '2', 'BOX64_DYNAREC_SAFEFLAGS': '1', 'BOX64_DYNAREC_STRONGMEM': '1'},
 }
-DEFAULT_CPU_PROFILE = 'fast'
+DEFAULT_CPU_PROFILE = 'balanced'
 PRESENT_PAUSE = 5.0        # seconds without a Vulkan present that count as a loading pause
+SPIN_SAMPLES = 6           # 10 s samples of a busy game main thread with no kernel work: stuck
 
 
 def box64_rc(game, profile=DEFAULT_CPU_PROFILE):
@@ -136,30 +139,24 @@ def box64_rc(game, profile=DEFAULT_CPU_PROFILE):
             f'[{game}]\n{settings}')
 
 
-BOOST_SCRIPT = r"""
-import ctypes, platform, struct, sys
-# struct sched_attr (VER1, 56 bytes); KEEP_POLICY|KEEP_PARAMS|UTIL_CLAMP_MIN: change only uclamp.min.
-attr = struct.pack('<IIQiIQQQII', 56, 0, 0x08 | 0x10 | 0x20, 0, 0, 0, 0, 0, int(sys.argv[2]), 1024)
-libc = ctypes.CDLL(None, use_errno=True)
-number = {'aarch64': 274, 'x86_64': 314}[platform.machine()]
-if libc.syscall(number, int(sys.argv[1]), ctypes.create_string_buffer(attr, 56), 0) != 0:
-    sys.exit('errno %d' % ctypes.get_errno())
-"""
+class SpinWatch:
+    """Notice a game main thread that only burns user time: no system time, no page faults.
 
-
-def boost_thread(tid, util_min=1024, timeout=10):
-    """Ask the scheduler to run one thread on the biggest core at full clock (uclamp.min).
-
-    Runs in a child process: if Android's app seccomp policy refused sched_setattr, the child,
-    not the supervisor, takes the SIGSYS. Returns a short result for the state file.
+    A real load reads files and grows its heap, so both move. In the 0.1.7 hang neither moved
+    for 120 s while the thread used a full core.
     """
-    try:
-        result = subprocess.run([sys.executable, '-I', '-c', BOOST_SCRIPT, str(int(tid)), str(int(util_min))],
-                                capture_output=True, text=True, timeout=timeout)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        return {'ok': False, 'error': type(error).__name__}
-    if result.returncode == 0: return {'ok': True, 'uclamp_min': util_min, 'tid': int(tid)}
-    return {'ok': False, 'error': (result.stderr.strip().splitlines() or ['exit %d' % result.returncode])[-1][:120]}
+    def __init__(self, samples=SPIN_SAMPLES):
+        self.samples, self.last, self.count = samples, None, 0
+
+    def observe(self, thread, seconds):
+        """thread: the main-thread entry of one sample. True once it has spun long enough."""
+        now = (thread.get('user_ticks'), thread.get('system_ticks'), thread.get('minor_faults'))
+        if None in now: return False
+        if self.last and seconds > 0:
+            busy = (now[0] - self.last[0]) / 100 / seconds >= 0.9
+            self.count = self.count + 1 if busy and now[1:] == self.last[1:] else 0
+        self.last = now
+        return self.count >= self.samples
 
 
 GAME_START_GRACE = 150     # seconds after launch before a missing game process is reported
@@ -432,8 +429,7 @@ def validate_request(request, game=GAME):
     if request.get('cpu_affinity', 'available') not in ('available', 'game'): raise ValueError('Unsupported CPU affinity')
     if request.get('runtime_mode', 'auto') not in ('auto', 'compatibility'): raise ValueError('Unsupported runtime mode')
     client_presentation.options(request)
-    for key in ('audio', 'dxvk_hud', 'diagnostic_logging', 'sound_diagnostics', 'vsync', 'controller_passthrough',
-                'boost_main_thread'):
+    for key in ('audio', 'dxvk_hud', 'diagnostic_logging', 'sound_diagnostics', 'vsync', 'controller_passthrough'):
         if not isinstance(request.get(key, False), bool): raise ValueError('Invalid option: ' + key)
     arguments = request.get('arguments', [])
     if (not isinstance(arguments, list) or len(arguments) > 32
@@ -487,7 +483,7 @@ class Supervisor:
         self.wine_log = None
         self.log_thread = None
         self.last_thread_sample = 0
-        self.boosted = set()
+        self.spin = SpinWatch()
         self.launch_token = secrets.token_hex(16)
         self.started_monotonic = time.monotonic()
         self.game_name = PurePosixPath(request.get('program', 'X3AP.exe')).name
@@ -723,9 +719,11 @@ class Supervisor:
             observed, fatal = self.wine_log.snapshot()
             if fatal: raise RuntimeError(fatal)
             if time.monotonic() - self.last_thread_sample >= 10:
+                interval = time.monotonic() - self.last_thread_sample
                 self.last_thread_sample = time.monotonic()
                 sample = self.sample_threads(launcher.pid)
                 self.read_pin_report()
+                self.watch_spin(sample, interval)
                 self.status['thread_sample'] = {k: v for k, v in sample.items() if k != 'threads'}
                 self.status['thread_sample']['thread_count'] = len(sample['threads'])
                 if sample.get('game_running'):
@@ -765,19 +763,21 @@ class Supervisor:
         summary = X3PIN_SUMMARY.findall(text)
         if summary: self.status['crypto_pin'] = '%s/%s (%s)' % summary[-1]
 
-    def boost_game_thread(self, sample):
-        """Once per game process: uclamp.min on its main thread, the one a load runs on."""
-        if not self.request.get('boost_main_thread', True): return
-        for thread in sample['threads']:
-            if thread['tid'] == thread['pid'] and thread['name'].lower() == self.game_name[:15].lower() \
-                    and thread['pid'] not in self.boosted:
-                self.boosted.add(thread['pid'])
-                self.status['main_thread_boost'] = boost_thread(thread['tid'])
+    def watch_spin(self, sample, seconds):
+        main = [t for t in sample['threads']
+                if t['tid'] == t['pid'] and t['name'].lower() == self.game_name[:15].lower()]
+        if main and self.spin.observe(main[0], seconds) and 'warning' not in self.status:
+            profile = self.request.get('cpu_profile', DEFAULT_CPU_PROFILE)
+            self.status['main_thread_spinning'] = True
+            self.status['warning'] = (
+                f'{self.game_name} seems stuck: its main thread has used a full core for '
+                f'{SPIN_SAMPLES * 10} s without any system call or page fault.'
+                + (f' The {profile} CPU profile can do that: stop the game and choose balanced.'
+                   if profile in ('fast', 'fastest') else ' Stop the game and export logs.'))
 
     def sample_threads(self, pid):
         before = time.monotonic()
         sample = process_threads(pid, launch_token=self.launch_token, game_name=self.game_name)
-        self.boost_game_thread(sample)
         if self.request.get('cpu_affinity', 'available') == 'available':
             sample['affinity_update'] = allow_game_cpus(sample, self.launch_token, game_name=self.game_name)
         sample['collection_seconds'] = round(time.monotonic() - before, 4)
