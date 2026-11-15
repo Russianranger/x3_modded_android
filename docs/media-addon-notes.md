@@ -8,12 +8,15 @@ the APK. It then unpacks the archive over the app's runtime (TRASC `client-runti
 
 - the archive's hash and size
 - the Debian Bookworm packages it adds
-- the tests CI ran on it before publishing: element checks, native WAV and MP3 decodes, and the
-  same decodes from x86-64 code through Box64's wrapped GStreamer
+- the tests CI ran on it before publishing: element checks; native WAV, MP3, WMA (ASF) and
+  MPEG-1 program-stream decodes; and the audio decodes again from x86-64 code through Box64's
+  wrapped GStreamer
 
 Contents:
 
 - GStreamer 1.22 core, plus plugins-base, -good and -ugly from Debian Bookworm (arm64)
+- gst-libav (FFmpeg 5.1 decoders), new in v2, for Betty's and the NPC voices, which are WMA 2 in
+  ASF, and for MPEG-1 video in the comms panel
 - from -bad, only `mpegpsdemux` and `videoparsersbad` (MPEG program streams)
 
 All of it is Debian packages under their own licences (mostly LGPL-2.1+). Sources are on
