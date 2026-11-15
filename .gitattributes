@@ -1,1 +1,3 @@
 patches/** -text
+tests/media/fixtures/*.m1v binary
+tests/media/fixtures/*.mpg binary

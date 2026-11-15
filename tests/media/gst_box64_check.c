@@ -9,6 +9,7 @@
 #include <dlfcn.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 static unsigned long long total_bytes;
 static unsigned buffers;
@@ -34,8 +35,9 @@ int main(int argc, char **argv)
     unsigned long (*g_signal_connect_data)(void *, const char *, void *, void *, void *, int);
     void *gst, *gobject, *error = NULL, *pipeline, *sink, *eos;
     char description[1024];
+    int video;
 
-    if (argc != 2) { fprintf(stderr, "usage: %s FILE\n", argv[0]); return 2; }
+    if (argc < 2) { fprintf(stderr, "usage: %s FILE [video]\n", argv[0]); return 2; }
     gst = dlopen("libgstreamer-1.0.so.0", RTLD_NOW);
     gobject = dlopen("libgobject-2.0.so.0", RTLD_NOW);
     if (!gst || !gobject) { fprintf(stderr, "dlopen: %s\n", dlerror()); return 2; }
@@ -45,15 +47,19 @@ int main(int argc, char **argv)
     LOAD(gobject, g_signal_connect_data);
 
     gst_init(NULL, NULL);
+    /* "video" as a second argument: decode to the 32-bit RGB that winegstreamer hands amstream. */
+    video = argc > 2 && !strcmp(argv[2], "video");
     snprintf(description, sizeof description,
-             "filesrc location=\"%s\" ! decodebin ! audioconvert ! audio/x-raw,format=S16LE "
-             "! fakesink name=sink signal-handoffs=true sync=false", argv[1]);
+             video ? "filesrc location=\"%s\" ! decodebin ! videoconvert ! video/x-raw,format=BGRx "
+                     "! fakesink name=sink signal-handoffs=true sync=false"
+                   : "filesrc location=\"%s\" ! decodebin ! audioconvert ! audio/x-raw,format=S16LE "
+                     "! fakesink name=sink signal-handoffs=true sync=false", argv[1]);
     if (!(pipeline = gst_parse_launch(description, &error)) || error) { fprintf(stderr, "pipeline failed\n"); return 1; }
     sink = gst_bin_get_by_name(pipeline, "sink");
     g_signal_connect_data(sink, "handoff", (void *)handoff, NULL, NULL, 0);
     gst_element_set_state(pipeline, 4 /* GST_STATE_PLAYING */);
     eos = gst_bus_timed_pop_filtered(gst_element_get_bus(pipeline), 30ull * 1000000000ull, 1 /* GST_MESSAGE_EOS */);
     gst_element_set_state(pipeline, 1 /* GST_STATE_NULL */);
-    printf("%s: %s, %u buffers, %llu PCM bytes\n", argv[1], eos ? "EOS" : "no EOS", buffers, total_bytes);
+    printf("%s: %s, %u buffers, %llu %s bytes\n", argv[1], eos ? "EOS" : "no EOS", buffers, total_bytes, video ? "BGRx" : "PCM");
     return eos && total_bytes > 0 ? 0 : 1;
 }

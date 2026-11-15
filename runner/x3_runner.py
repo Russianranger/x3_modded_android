@@ -24,6 +24,7 @@ import shutil
 import signal
 import struct
 import subprocess
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -109,6 +110,58 @@ def gstreamer_environment(prefix=PREFIX, diagnostic=False):
             'GST_PLUGIN_SCANNER_1_0': GST_ROOT + '/gstreamer1.0/gstreamer-1.0/gst-plugin-scanner',
             'GST_REGISTRY_1_0': str(prefix / 'x3-cache' / 'gstreamer-registry.aarch64.bin'),
             'GST_DEBUG': '2' if diagnostic else '1', 'GST_DEBUG_NO_COLOR': '1'}
+# Box64 dynarec settings for the game's process ([X3AP.exe] section of the session rc file; an rc
+# section overrides the environment). The CPU-bound part of a load is X3's own code, so these
+# decide most of the menu-to-game time. "fast" and "fastest" are Box64's own profiles of those
+# names (src/tools/env.c, BOX64_PROFILE); BIGBLOCK=3 is the one that reaches PE (Wine) code at all,
+# DIRTY=1 avoids re-translating code that shares a page with data that is being written.
+CPU_PROFILES = {
+    'fast': {'BOX64_DYNAREC_BIGBLOCK': '3', 'BOX64_DYNAREC_CALLRET': '1', 'BOX64_DYNAREC_SAFEFLAGS': '0',
+             'BOX64_DYNAREC_STRONGMEM': '1', 'BOX64_DYNAREC_DIRTY': '1', 'BOX64_DYNAREC_FORWARD': '1024'},
+    'fastest': {'BOX64_DYNAREC_BIGBLOCK': '3', 'BOX64_DYNAREC_CALLRET': '1', 'BOX64_DYNAREC_SAFEFLAGS': '0',
+                'BOX64_DYNAREC_STRONGMEM': '0', 'BOX64_DYNAREC_DIRTY': '1', 'BOX64_DYNAREC_FORWARD': '1024'},
+    'balanced': {'BOX64_DYNAREC_BIGBLOCK': '2', 'BOX64_DYNAREC_SAFEFLAGS': '1', 'BOX64_DYNAREC_STRONGMEM': '1'},
+    'accurate': {'BOX64_DYNAREC_BIGBLOCK': '2', 'BOX64_DYNAREC_SAFEFLAGS': '1', 'BOX64_DYNAREC_STRONGMEM': '1'},
+}
+DEFAULT_CPU_PROFILE = 'fast'
+PRESENT_PAUSE = 5.0        # seconds without a Vulkan present that count as a loading pause
+
+
+def box64_rc(game, profile=DEFAULT_CPU_PROFILE):
+    """Box64 rc text: real CPU count for Wine, the chosen profile for the game's process."""
+    game = re.sub(r'[^A-Za-z0-9._-]', '', game) or 'X3AP.exe'
+    settings = ''.join(f'{key}={value}\n' for key, value in CPU_PROFILES[profile].items())
+    return ('[wine]\nBOX64_MAXCPU=0\n[wine64]\nBOX64_MAXCPU=0\n'
+            '[explorer.exe]\nBOX64_DYNAREC_BIGBLOCK=0\n'
+            f'[{game}]\n{settings}')
+
+
+BOOST_SCRIPT = r"""
+import ctypes, platform, struct, sys
+# struct sched_attr (VER1, 56 bytes); KEEP_POLICY|KEEP_PARAMS|UTIL_CLAMP_MIN: change only uclamp.min.
+attr = struct.pack('<IIQiIQQQII', 56, 0, 0x08 | 0x10 | 0x20, 0, 0, 0, 0, 0, int(sys.argv[2]), 1024)
+libc = ctypes.CDLL(None, use_errno=True)
+number = {'aarch64': 274, 'x86_64': 314}[platform.machine()]
+if libc.syscall(number, int(sys.argv[1]), ctypes.create_string_buffer(attr, 56), 0) != 0:
+    sys.exit('errno %d' % ctypes.get_errno())
+"""
+
+
+def boost_thread(tid, util_min=1024, timeout=10):
+    """Ask the scheduler to run one thread on the biggest core at full clock (uclamp.min).
+
+    Runs in a child process: if Android's app seccomp policy refused sched_setattr, the child,
+    not the supervisor, takes the SIGSYS. Returns a short result for the state file.
+    """
+    try:
+        result = subprocess.run([sys.executable, '-I', '-c', BOOST_SCRIPT, str(int(tid)), str(int(util_min))],
+                                capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {'ok': False, 'error': type(error).__name__}
+    if result.returncode == 0: return {'ok': True, 'uclamp_min': util_min, 'tid': int(tid)}
+    return {'ok': False, 'error': (result.stderr.strip().splitlines() or ['exit %d' % result.returncode])[-1][:120]}
+
+
 GAME_START_GRACE = 150     # seconds after launch before a missing game process is reported
 GAME_EXIT_SAMPLES = 2      # consecutive 10 s samples without the game after it was running
 WINE_PROCESS = re.compile(r'(?:^wineserver$|\.exe$)', re.I)
@@ -170,6 +223,7 @@ class WineLog:
         self.pending = b''
         self.trace = ''
         self.fps_streams = set()
+        self.last_present = None
 
     def observe(self, chunk):
         self.pending += chunk
@@ -182,7 +236,7 @@ class WineLog:
                 if re.search(r'Loaded L".*\\+d3d9\.dll".*: native\s*$', line, re.I):
                     self.fields['native_d3d9_loaded'] = True
                 if re.search(r'DXVK: v?2\.5\.3\b', line): self.fields['dxvk_loaded'] = '2.5.3'
-                pin = re.search(r'x3pin: (\d+) of (\d+) DLLs pinned \(([^)]{0,40})\)', line)
+                pin = X3PIN_SUMMARY.search(line)
                 if pin: self.fields['crypto_pin'] = f'{pin[1]}/{pin[2]} ({pin[3]})'
                 mode = re.search(r'Present mode: (VK_PRESENT_MODE_\w+)', line)
                 if mode: self.fields['dxvk_present_mode'] = mode[1]
@@ -190,6 +244,17 @@ class WineLog:
                     self.fields['dsound_loaded'] = re.search(r': (builtin|native)\s*$', line)[1]
                 if re.search(r':(err|warn):dsound', line): self.fields['dsound_errors'] += 1
                 fps = re.search(r':([0-9a-f]+):[0-9a-f]+:trace:fps:\w+ ((?:0x)?[0-9a-f]+) @ approx ([0-9]+\.[0-9]+)fps', line, re.I)
+                stamp = re.match(r'(\d+\.\d+):', line) if fps else None
+                if stamp:
+                    # Wine prints this at the first present 1.5 s after its last print, so the
+                    # distance between two prints is a pause in presenting: a loading screen.
+                    now = float(stamp[1])
+                    if self.last_present is not None and now - self.last_present >= PRESENT_PAUSE:
+                        pauses = self.fields.setdefault('present_pauses_seconds', [])
+                        pauses.append(round(now - self.last_present, 1))
+                        del pauses[:-12]
+                        self.fields['longest_present_pause_seconds'] = max(pauses + [self.fields.get('longest_present_pause_seconds', 0)])
+                    self.last_present = now
                 if fps:
                     stream = fps[1].lower() + ':' + fps[2].lower()
                     if stream in self.fps_streams and 0 <= float(fps[3]) <= 10000:
@@ -315,7 +380,8 @@ def sniff_media(head):
     if head[:3] == b'ID3' or (len(head) > 1 and head[0] == 0xff and head[1] & 0xe0 == 0xe0):
         return 'mpeg-audio'
     if head[:4] == b'OggS': return 'ogg'
-    if head[:4] in (b'\x00\x00\x01\xba', b'\x00\x00\x01\xb3'): return 'mpeg-video'
+    if head[:4] == b'\x00\x00\x01\xba': return 'mpeg-ps' + ('2' if len(head) > 4 and head[4] & 0xc0 == 0x40 else '1')
+    if head[:4] == b'\x00\x00\x01\xb3': return 'mpeg-video-es'
     if head[:2] == b'\x1f\x8b': return 'gzip'
     return 'other'
 
@@ -362,11 +428,12 @@ def validate_request(request, game=GAME):
     if request.get('resolution') not in RESOLUTIONS: raise ValueError('Unsupported resolution')
     if request.get('renderer', 'turnip') not in ('turnip', 'software'): raise ValueError('Unsupported graphics option')
     client_vulkan.driver_file(request.get('turnip_driver', client_vulkan.DEFAULT_DRIVER))
-    if request.get('cpu_profile', 'balanced') not in ('balanced', 'accurate'): raise ValueError('Unsupported CPU profile')
+    if request.get('cpu_profile', DEFAULT_CPU_PROFILE) not in CPU_PROFILES: raise ValueError('Unsupported CPU profile')
     if request.get('cpu_affinity', 'available') not in ('available', 'game'): raise ValueError('Unsupported CPU affinity')
     if request.get('runtime_mode', 'auto') not in ('auto', 'compatibility'): raise ValueError('Unsupported runtime mode')
     client_presentation.options(request)
-    for key in ('audio', 'dxvk_hud', 'diagnostic_logging', 'sound_diagnostics', 'vsync', 'controller_passthrough'):
+    for key in ('audio', 'dxvk_hud', 'diagnostic_logging', 'sound_diagnostics', 'vsync', 'controller_passthrough',
+                'boost_main_thread'):
         if not isinstance(request.get(key, False), bool): raise ValueError('Invalid option: ' + key)
     arguments = request.get('arguments', [])
     if (not isinstance(arguments, list) or len(arguments) > 32
@@ -389,6 +456,8 @@ def windows_path(relative):
 
 X3PIN = HERE / 'x3pin.exe'      # native/x3pin: keeps the CryptoAPI DLLs loaded in the game
 X3PIN_WINDOWS = 'Z:' + str(X3PIN).replace('/', '\\')
+X3PIN_LOG = SESSION / 'x3pin.log'   # x3pin's report (its console stderr is not ours to read)
+X3PIN_SUMMARY = re.compile(r'x3pin: (\d+) of (\d+) DLLs pinned \(([^)]{0,40})\)')
 
 
 def build_command(request, info, pin=None):
@@ -418,6 +487,7 @@ class Supervisor:
         self.wine_log = None
         self.log_thread = None
         self.last_thread_sample = 0
+        self.boosted = set()
         self.launch_token = secrets.token_hex(16)
         self.started_monotonic = time.monotonic()
         self.game_name = PurePosixPath(request.get('program', 'X3AP.exe')).name
@@ -425,7 +495,7 @@ class Supervisor:
                        'resolution': request.get('resolution'), 'display_target_fps': request.get('display_fps', 60),
                        'renderer': 'Checking graphics driver', 'graphics_backend': request.get('renderer', 'turnip'),
                        'started_at': time.time(), 'timings_seconds': {},
-                       'cpu_profile': request.get('cpu_profile', 'balanced'),
+                       'cpu_profile': request.get('cpu_profile', DEFAULT_CPU_PROFILE),
                        'runtime_acceleration': request.get('runtime_acceleration', 'unspecified')}
         self.env = dict(os.environ, DISPLAY=':7', XAUTHORITY=str(SESSION / 'Xauthority'),
                         WINEPREFIX=str(PREFIX), WINEARCH='win64', WINEDEBUG=wine_debug(),
@@ -435,7 +505,8 @@ class Supervisor:
                         BOX64_LOG='1', BOX64_NOBANNER='0', BOX64_PATH='/opt/wine/bin',
                         BOX64_LD_LIBRARY_PATH='/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu:/opt/wine/lib/wine/x86_64-unix',
                         LIBGL_ALWAYS_SOFTWARE='1', GALLIUM_DRIVER='llvmpipe', LP_NUM_THREADS='4',
-                        WINE_D3D_CONFIG='csmt=1', **{LAUNCH_ENV: self.launch_token})
+                        WINE_D3D_CONFIG='csmt=1', X3PIN_LOG='Z:' + str(X3PIN_LOG).replace('/', '\\'),
+                        **{LAUNCH_ENV: self.launch_token})
         self.status['controller_passthrough'] = request.get('controller_passthrough', False)
         addon = media_addon()
         self.status['media_addon'] = {k: addon.get(k) for k in ('version', 'sha256')} if addon else None
@@ -460,11 +531,9 @@ class Supervisor:
 
     def configure_cpu(self):
         # Box64's stock [wine] section forces 64 CPUs; a private rc file keeps the real count.
-        game = re.sub(r'[^A-Za-z0-9._-]', '', self.game_name) or 'X3AP.exe'
-        (SESSION / 'box64.rc').write_text(
-            '[wine]\nBOX64_MAXCPU=0\n[wine64]\nBOX64_MAXCPU=0\n'
-            '[explorer.exe]\nBOX64_DYNAREC_BIGBLOCK=0\n'
-            f'[{game}]\nBOX64_DYNAREC_BIGBLOCK=2\nBOX64_DYNAREC_SAFEFLAGS=1\nBOX64_DYNAREC_STRONGMEM=1\n')
+        profile = self.request.get('cpu_profile', DEFAULT_CPU_PROFILE)
+        (SESSION / 'box64.rc').write_text(box64_rc(self.game_name, profile))
+        self.status['game_box64'] = dict(CPU_PROFILES[profile])
         try: affinity = sorted(os.sched_getaffinity(0))
         except (AttributeError, OSError): affinity = []
         self.update(cpu_settings={k: v for k, v in self.env.items() if k.startswith('BOX64_')}, available_cpu_ids=affinity)
@@ -612,6 +681,7 @@ class Supervisor:
                      'x3-vulkan.log', 'client-input.log', 'client-frame-bridge.log'):
             archive_log(LOGS / name)
         (LOGS / 'x3-wine.overflow.log').unlink(missing_ok=True)
+        X3PIN_LOG.unlink(missing_ok=True)
         write_xauthority(self.env['XAUTHORITY'], 7)
         xserver = self.spawn(['Xtigervnc', ':7', '-geometry', self.request['resolution'], '-depth', '24',
                               '-rfbport', '-1', '-rfbunixpath', str(SESSION / 'display.sock'), '-rfbunixmode', '0600',
@@ -655,6 +725,7 @@ class Supervisor:
             if time.monotonic() - self.last_thread_sample >= 10:
                 self.last_thread_sample = time.monotonic()
                 sample = self.sample_threads(launcher.pid)
+                self.read_pin_report()
                 self.status['thread_sample'] = {k: v for k, v in sample.items() if k != 'threads'}
                 self.status['thread_sample']['thread_count'] = len(sample['threads'])
                 if sample.get('game_running'):
@@ -687,9 +758,26 @@ class Supervisor:
             self.update(launcher_exit=launcher.poll(), **observed)
             time.sleep(1)
 
+    def read_pin_report(self):
+        try:
+            with X3PIN_LOG.open(errors='replace') as source: text = source.read(16384)
+        except OSError: return
+        summary = X3PIN_SUMMARY.findall(text)
+        if summary: self.status['crypto_pin'] = '%s/%s (%s)' % summary[-1]
+
+    def boost_game_thread(self, sample):
+        """Once per game process: uclamp.min on its main thread, the one a load runs on."""
+        if not self.request.get('boost_main_thread', True): return
+        for thread in sample['threads']:
+            if thread['tid'] == thread['pid'] and thread['name'].lower() == self.game_name[:15].lower() \
+                    and thread['pid'] not in self.boosted:
+                self.boosted.add(thread['pid'])
+                self.status['main_thread_boost'] = boost_thread(thread['tid'])
+
     def sample_threads(self, pid):
         before = time.monotonic()
         sample = process_threads(pid, launch_token=self.launch_token, game_name=self.game_name)
+        self.boost_game_thread(sample)
         if self.request.get('cpu_affinity', 'available') == 'available':
             sample['affinity_update'] = allow_game_cpus(sample, self.launch_token, game_name=self.game_name)
         sample['collection_seconds'] = round(time.monotonic() - before, 4)

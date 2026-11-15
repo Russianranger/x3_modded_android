@@ -44,6 +44,9 @@ public final class GameActivity extends Activity {
             if(launch.has("renderer"))text.append("\n").append(launch.optString("renderer"));
             JSONObject present=launch.optJSONObject("wine_present");
             if(present!=null)text.append(String.format(java.util.Locale.ROOT," · Wine %.1f fps",present.optDouble("per_second")));
+            org.json.JSONArray pauses=launch.optJSONArray("present_pauses_seconds");
+            if(pauses!=null&&pauses.length()>0)   // a pause in presenting = a loading screen
+                text.append(String.format(java.util.Locale.ROOT," · last load %.0f s",pauses.optDouble(pauses.length()-1)));
             if(launch.has("warning"))text.append("\n").append(launch.optString("warning"));
         }
         text.append("\nLayer ").append(controller.layerLabel());

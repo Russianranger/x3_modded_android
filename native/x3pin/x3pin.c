@@ -12,13 +12,29 @@
  * CreateRemoteThread for each DLL. Nothing else in the program is touched; if pinning fails
  * the program just runs as it would have. Waits for the program and returns its exit code.
  *
- * Usage: x3pin.exe PROGRAM [ARGUMENTS...]    (diagnostics go to stderr, prefixed "x3pin:")
+ * Usage: x3pin.exe PROGRAM [ARGUMENTS...]
+ * Diagnostics, prefixed "x3pin:", go to stderr and are appended to the file named by the
+ * X3PIN_LOG environment variable if set: started from Wine's desktop, a console program's stderr
+ * goes to a console nobody reads, so the app reads the file instead.
  * Build: i686-w64-mingw32-gcc -municode -O2 -s -o x3pin.exe x3pin.c -lpsapi
  */
 #include <windows.h>
 #include <psapi.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <wchar.h>
+
+static void say(const char *format, ...)
+{
+    wchar_t path[MAX_PATH];
+    va_list args;
+    FILE *log;
+    va_start(args, format); vfprintf(stderr, format, args); va_end(args);
+    fflush(stderr);
+    if (!GetEnvironmentVariableW(L"X3PIN_LOG", path, MAX_PATH) || !(log = _wfopen(path, L"a"))) return;
+    va_start(args, format); vfprintf(log, format, args); va_end(args);
+    fclose(log);
+}
 
 static const wchar_t *const pin_dlls[] = { L"bcrypt.dll", L"crypt32.dll", L"rsaenh.dll" };
 
@@ -55,7 +71,7 @@ static int pin(HANDLE process, DWORD pid)
     size_t i;
 
     if (!local_load) return 0;
-    if (!target_k32) { fprintf(stderr, "x3pin: kernel32 not found in pid %lu (error %lu), assuming same base\n", pid, GetLastError()); target_k32 = local_k32; }
+    if (!target_k32) { say("x3pin: kernel32 not found in pid %lu (error %lu), assuming same base\n", pid, GetLastError()); target_k32 = local_k32; }
     load = (LPTHREAD_START_ROUTINE)(target_k32 + (local_load - local_k32));
 
     for (i = 0; i < sizeof(pin_dlls) / sizeof(pin_dlls[0]); i++) {
@@ -64,17 +80,17 @@ static int pin(HANDLE process, DWORD pid)
         HANDLE thread;
         DWORD module = 0;
         if (!name || !WriteProcessMemory(process, name, pin_dlls[i], bytes, NULL)) {
-            fprintf(stderr, "x3pin: cannot write into pid %lu (error %lu)\n", pid, GetLastError());
+            say("x3pin: cannot write into pid %lu (error %lu)\n", pid, GetLastError());
             if (name) VirtualFreeEx(process, name, 0, MEM_RELEASE);
             break;
         }
         thread = CreateRemoteThread(process, NULL, 0, load, name, 0, NULL);
-        if (!thread) { fprintf(stderr, "x3pin: CreateRemoteThread failed (error %lu)\n", GetLastError()); VirtualFreeEx(process, name, 0, MEM_RELEASE); break; }
+        if (!thread) { say("x3pin: CreateRemoteThread failed (error %lu)\n", GetLastError()); VirtualFreeEx(process, name, 0, MEM_RELEASE); break; }
         if (WaitForSingleObject(thread, 30000) == WAIT_OBJECT_0) GetExitCodeThread(thread, &module);
         CloseHandle(thread);
         VirtualFreeEx(process, name, 0, MEM_RELEASE);
         if (module) pinned++;
-        fprintf(stderr, "x3pin: %ls %s in pid %lu\n", pin_dlls[i], module ? "pinned" : "NOT pinned", pid);
+        say("x3pin: %ls %s in pid %lu\n", pin_dlls[i], module ? "pinned" : "NOT pinned", pid);
     }
     return pinned;
 }
@@ -90,13 +106,13 @@ int wmain(void)
     if (!*command) { fwprintf(stderr, L"usage: x3pin.exe PROGRAM [ARGUMENTS...]\n"); return 2; }
     command = _wcsdup(command);   /* CreateProcessW may write to its command line */
     if (!CreateProcessW(NULL, command, NULL, NULL, TRUE, 0, NULL, NULL, &startup, &child)) {
-        fprintf(stderr, "x3pin: cannot start %ls (error %lu)\n", command, GetLastError());
+        say("x3pin: cannot start %ls (error %lu)\n", command, GetLastError());
         return 1;
     }
     idle = WaitForInputIdle(child.hProcess, 60000);
     if (WaitForSingleObject(child.hProcess, 0) == WAIT_TIMEOUT) {
         pinned = pin(child.hProcess, child.dwProcessId);
-        fprintf(stderr, "x3pin: %d of %u DLLs pinned (%s)\n", pinned, (unsigned)(sizeof(pin_dlls) / sizeof(pin_dlls[0])),
+        say("x3pin: %d of %u DLLs pinned (%s)\n", pinned, (unsigned)(sizeof(pin_dlls) / sizeof(pin_dlls[0])),
                 idle == 0 ? "program idle" : idle == WAIT_TIMEOUT ? "idle wait timed out" : "idle wait failed");
     }
     WaitForSingleObject(child.hProcess, INFINITE);

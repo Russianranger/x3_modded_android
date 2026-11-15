@@ -97,6 +97,13 @@ class RequestTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             x3_runner.program_path("Link.exe", self.game)
 
+    def test_cpu_profiles_are_validated(self):
+        for profile in ("fast", "fastest", "balanced", "accurate"):
+            x3_runner.validate_request(dict(self.request, cpu_profile=profile), self.game)
+        for key, value in (("cpu_profile", "turbo"), ("boost_main_thread", "yes")):
+            with self.assertRaises(ValueError, msg=key):
+                x3_runner.validate_request(dict(self.request, **{key: value}), self.game)
+
     def test_bad_options(self):
         for key, value in (("resolution", "999x999"), ("renderer", "virgl"), ("display_fps", 45),
                            ("audio", "yes"), ("arguments", "-skipintro"), ("turnip_driver", "1.0")):
@@ -257,8 +264,12 @@ class FirstDeviceRunTests(unittest.TestCase):
                 fields = ["S"] + ["0"] * 18 + ["777"] + ["0"] * 30
                 (task / "stat").write_text(f"{pid} ({name}) " + " ".join(fields))
                 (task / "status").write_text("Cpus_allowed_list:\t0-7\n")
+                (task / "schedstat").write_text("5000000000 250000000 123\n")
             sample = x3_runner.process_threads(4300, proc=proc, launch_token=token, game_name="X3AP.exe")
         self.assertTrue(sample["game_running"])
+        main = [t for t in sample["threads"] if t["pid"] == 4100][0]
+        self.assertEqual((main["on_cpu_ms"], main["run_delay_ms"], main["user_ticks"]), (5000, 250, 0))
+        self.assertNotIn("run_delay_ms", [t for t in sample["threads"] if t["pid"] == 4300][0])
         self.assertEqual(sample["processes"], 2)      # the unmarked X3AP.exe is not ours
         self.assertEqual(sorted(t["pid"] for t in sample["threads"]), [4100, 4300])
 
@@ -280,7 +291,12 @@ class MediaSurveyTests(unittest.TestCase):
         self.assertEqual(x3_runner.sniff_media(b"\xff\xfb\x90\x00" + bytes(20)), "mpeg-audio")
         wav = b"RIFF" + bytes(4) + b"WAVEfmt " + struct.pack("<IH", 16, 0x0055) + bytes(14)
         self.assertEqual(x3_runner.sniff_media(wav), "wav/mp3")
-        self.assertEqual(x3_runner.sniff_media(b"\x00\x00\x01\xba" + bytes(8)), "mpeg-video")
+        self.assertEqual(x3_runner.sniff_media(b"\x00\x00\x01\xba\x21" + bytes(8)), "mpeg-ps1")
+        self.assertEqual(x3_runner.sniff_media(b"\x00\x00\x01\xba\x44" + bytes(8)), "mpeg-ps2")
+        self.assertEqual(x3_runner.sniff_media(b"\x00\x00\x01\xb3" + bytes(8)), "mpeg-video-es")
+        fixtures = Path(__file__).resolve().parent / "media" / "fixtures"
+        self.assertEqual(x3_runner.sniff_media((fixtures / "comms.mpg").read_bytes()[:64]), "mpeg-ps1")
+        self.assertEqual(x3_runner.sniff_media((fixtures / "comms.m1v").read_bytes()[:64]), "mpeg-video-es")
         self.assertEqual(x3_runner.sniff_media(b"hello"), "other")
 
     def test_survey_counts_folders_case_insensitively(self):
@@ -299,6 +315,41 @@ class MediaSurveyTests(unittest.TestCase):
         log.observe(b"x3pin: rsaenh.dll pinned in pid 292\nx3pin: 3 of 3 DLLs pinned (program idle)\n")
         self.assertEqual(log.snapshot()[0]["crypto_pin"], "3/3 (program idle)")
 
+
+class LoadTimeTests(unittest.TestCase):
+    """Sixth Thor run: menu to game took 180 s, CPU-bound in X3's own (emulated) code."""
+
+    def test_game_profiles_go_into_its_rc_section(self):
+        rc = x3_runner.box64_rc("X3AP.exe", "fast")
+        section = rc.split("[X3AP.exe]\n", 1)[1]
+        self.assertIn("BOX64_DYNAREC_BIGBLOCK=3\n", section)
+        self.assertIn("BOX64_DYNAREC_DIRTY=1\n", section)
+        self.assertIn("BOX64_DYNAREC_STRONGMEM=1\n", section)
+        self.assertIn("BOX64_DYNAREC_STRONGMEM=0\n", x3_runner.box64_rc("X3AP.exe", "fastest"))
+        self.assertIn("[wine]\nBOX64_MAXCPU=0\n", rc)
+        self.assertIn("BOX64_DYNAREC_BIGBLOCK=2\nBOX64_DYNAREC_SAFEFLAGS=1\nBOX64_DYNAREC_STRONGMEM=1\n",
+                      x3_runner.box64_rc("X3AP.exe", "balanced"))
+        self.assertTrue(x3_runner.box64_rc("x3 ap;rm.exe", "fast").count("[x3aprm.exe]") == 1)
+        self.assertEqual(x3_runner.DEFAULT_CPU_PROFILE, "fast")
+
+    def test_present_pauses_measure_loads(self):
+        log = x3_runner.WineLog(Path(tempfile.gettempdir()) / "unused.log", game=True)
+        line = "{:.3f}:0140:01c0:trace:fps:win32u_vkQueuePresentKHR 0x38197b08 @ approx 59.90fps, total 59.00fps\n"
+        times = [100.0, 101.6, 103.2, 283.2, 284.8, 300.0, 301.5]
+        log.observe("".join(line.format(t) for t in times).encode())
+        fields = log.snapshot()[0]
+        self.assertEqual(fields["present_pauses_seconds"], [180.0, 15.2])
+        self.assertEqual(fields["longest_present_pause_seconds"], 180.0)
+
+    def test_x3pin_report_file_format(self):
+        match = x3_runner.X3PIN_SUMMARY.search("x3pin: 3 of 3 DLLs pinned (program idle)\n")
+        self.assertEqual(match.groups(), ("3", "3", "program idle"))
+        self.assertTrue(x3_runner.X3PIN_LOG.name == "x3pin.log")
+
+    def test_boost_never_raises(self):
+        result = x3_runner.boost_thread(os.getpid(), util_min=0)
+        self.assertIn("ok", result)
+        self.assertFalse(x3_runner.boost_thread(2 ** 22 + 12345)["ok"])   # no such thread
 
 class SavesTests(unittest.TestCase):
     """X3's Documents\\Egosoft must end up in /saves, whatever Wine did with Documents."""

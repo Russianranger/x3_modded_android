@@ -80,6 +80,14 @@ def process_threads(root_pid, proc=Path('/proc'), launch_token=None, game_name='
                          'start_ticks': int(fields[19]),
                          'cpu_ticks': int(fields[11])+int(fields[12]),
                          'last_cpu': int(fields[36])}
+                if int(task.name) == pid and name.lower() == game_name[:15].lower():
+                    # X3: where the game's main thread spends a load: emulated code (user), kernel
+                    # work and page faults (system), or waiting for a CPU (schedstat run delay).
+                    entry.update(user_ticks=int(fields[11]), system_ticks=int(fields[12]), minor_faults=int(fields[7]))
+                    try:
+                        on_cpu, waiting, _ = (task/'schedstat').read_text()[:256].split()[:3]
+                        entry.update(on_cpu_ms=int(on_cpu) // 1000000, run_delay_ms=int(waiting) // 1000000)
+                    except (OSError, ValueError): pass
                 if len(threads) < 32 or re.search(r'(?:^|:)gl\d+$', name):
                     status = (task/'status').read_text()[:16384]
                     mask = re.search(r'^Cpus_allowed_list:\s*(.+)$', status, re.M)

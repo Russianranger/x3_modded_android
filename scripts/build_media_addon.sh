@@ -70,33 +70,29 @@ if tar -tvzf "$out/media-addon-arm64.tar.gz" | grep -qv '^[-l]'; then echo "add-
 # --- tests: native GStreamer ---------------------------------------------------------------
 for element in decodebin audioconvert audioresample wavparse avidemux mpegaudioparse mpg123audiodec \
                mpeg2dec mpegpsdemux mpegvideoparse asfdemux avdec_wmav2 avdec_mpeg2video \
-               lamemp3enc wavenc audiotestsrc videotestsrc avenc_wmav2 avenc_mpeg1video; do
+               lamemp3enc wavenc audiotestsrc avenc_wmav2 videoconvert; do
     gst-inspect-1.0 --exists "$element" || { echo "missing element $element" >&2; exit 1; }
 done
 work=$(mktemp -d)
 gst-launch-1.0 -q audiotestsrc num-buffers=100 ! audioconvert ! wavenc ! filesink location="$work/tone.wav"
 gst-launch-1.0 -q audiotestsrc num-buffers=100 ! audioconvert ! lamemp3enc ! filesink location="$work/tone.mp3"
-# WMA-in-ASF (voices) and MPEG-1 program streams (comms videos) need muxers from -bad that the
-# add-on leaves out: load just those two from the unpacked -bad package, for the test only.
-mkdir -p "$work/muxers" && cp /tmp/bad/root$gst/libgstasfmux.so /tmp/bad/root$gst/libgstmpegpsmux.so "$work/muxers/"
+# WMA-in-ASF (voices) needs asfmux from -bad, which the add-on leaves out: load just that one
+# from the unpacked -bad package, for the test only.
+mkdir -p "$work/muxers" && cp /tmp/bad/root$gst/libgstasfmux.so "$work/muxers/"
 GST_PLUGIN_PATH="$work/muxers" gst-launch-1.0 -q audiotestsrc num-buffers=100 ! audioconvert ! avenc_wmav2 ! asfmux \
     ! filesink location="$work/voice.wma"
-gst-launch-1.0 -q videotestsrc num-buffers=50 ! video/x-raw,format=I420,width=320,height=240,framerate=25/1 \
-    ! avenc_mpeg1video ! filesink location="$work/comms.m1v"
-# Program-stream mux is a best effort: only mpegpsdemux needs it, and the comms files are sniffed
-# as MPEG video either way.
-if GST_DEBUG=2 GST_PLUGIN_PATH="$work/muxers" gst-launch-1.0 -q filesrc location="$work/comms.m1v" ! mpegvideoparse \
-        ! mpegpsmux ! filesink location="$work/comms.mpg"; then ps_ok=1; else ps_ok=0; echo "note: MPEG-PS mux test skipped"; fi
+# MPEG-1 video (comms faces): fixed fixtures, an elementary stream and a program stream, made with
+# ffmpeg from its test pattern (tests/media/fixtures). GStreamer 1.22's avenc_mpeg1video would not
+# negotiate with videotestsrc here, and the encoder is not what X3 needs anyway.
+cp "$repo/tests/media/fixtures/comms.m1v" "$repo/tests/media/fixtures/comms.mpg" "$work/"
 for file in "$work/tone.wav" "$work/tone.mp3" "$work/voice.wma"; do
     gst-launch-1.0 -q filesrc location="$file" ! decodebin ! audioconvert ! fakesink
     echo "native decode ok: $(basename "$file")"
 done
-gst-launch-1.0 -q filesrc location="$work/comms.m1v" ! decodebin ! videoconvert ! fakesink
-echo "native decode ok: comms.m1v (MPEG-1 video)"
-if [ "$ps_ok" = 1 ]; then
-    gst-launch-1.0 -q filesrc location="$work/comms.mpg" ! decodebin ! videoconvert ! fakesink
-    echo "native decode ok: comms.mpg (MPEG-1 program stream)"
-fi
+for file in "$work/comms.m1v" "$work/comms.mpg"; do
+    gst-launch-1.0 -q filesrc location="$file" ! decodebin ! videoconvert ! fakesink
+    echo "native decode ok: $(basename "$file") (MPEG-1 video)"
+done
 
 # --- tests: Box64-wrapped GStreamer from x86-64 code (not part of the add-on) -----------------
 apt-get update -qq
@@ -107,6 +103,12 @@ for file in "$work/tone.wav" "$work/tone.mp3" "$work/voice.wma"; do
         GST_REGISTRY_1_0="$work/registry.bin" /usr/local/bin/box64 "$work/gst_box64_check" "$file" 2>&1 \
         | tee "$work/box64.log" | grep -E "native\(wrapped\) libgst|EOS|Warning|Error" || true
     grep -q ": EOS, " "$work/box64.log" || { echo "Box64 GStreamer check failed for $file" >&2; cat "$work/box64.log" >&2; exit 1; }
+done
+for file in "$work/comms.m1v" "$work/comms.mpg"; do
+    BOX64_LOG=1 BOX64_NOBANNER=1 BOX64_LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu \
+        GST_REGISTRY_1_0="$work/registry.bin" /usr/local/bin/box64 "$work/gst_box64_check" "$file" video 2>&1 \
+        | tee "$work/box64.log" | grep -E "EOS|Warning|Error" || true
+    grep -q ": EOS, [1-9][0-9]* buffers" "$work/box64.log" || { echo "Box64 GStreamer video check failed for $file" >&2; cat "$work/box64.log" >&2; exit 1; }
 done
 
 python3 -I - "$out" "$version" "$runtime_sha256" <<'PY'
@@ -119,7 +121,7 @@ manifest = {
     "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(), "bytes": archive.stat().st_size,
     "files": sum(1 for _ in open("/tmp/addon-files.txt")),
     "packages": pathlib.Path("/etc/x3-media-addon.packages").read_text().split("\n")[:-1],
-    "tests": ["gst-inspect elements", "native wav+mp3+wma(asf)+mpeg1-ps decode", "box64 wrapped gstreamer wav+mp3+wma decode with callback"],
+    "tests": ["gst-inspect elements", "native wav+mp3+wma(asf)+mpeg1 es/ps decode", "box64 wrapped gstreamer wav+mp3+wma+mpeg1 decode with callback"],
 }
 (out / "media-addon.json").write_text(json.dumps(manifest, indent=1) + "\n")
 print(json.dumps({k: manifest[k] for k in ("version", "sha256", "bytes", "files")}))
