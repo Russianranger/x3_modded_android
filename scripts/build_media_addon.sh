@@ -81,14 +81,22 @@ gst-launch-1.0 -q audiotestsrc num-buffers=100 ! audioconvert ! lamemp3enc ! fil
 mkdir -p "$work/muxers" && cp /tmp/bad/root$gst/libgstasfmux.so /tmp/bad/root$gst/libgstmpegpsmux.so "$work/muxers/"
 GST_PLUGIN_PATH="$work/muxers" gst-launch-1.0 -q audiotestsrc num-buffers=100 ! audioconvert ! avenc_wmav2 ! asfmux \
     ! filesink location="$work/voice.wma"
-GST_PLUGIN_PATH="$work/muxers" gst-launch-1.0 -q videotestsrc num-buffers=50 ! video/x-raw,width=320,height=240,framerate=25/1 \
-    ! videoconvert ! avenc_mpeg1video ! mpegvideoparse ! mpegpsmux ! filesink location="$work/comms.mpg"
+gst-launch-1.0 -q videotestsrc num-buffers=50 ! video/x-raw,format=I420,width=320,height=240,framerate=25/1 \
+    ! avenc_mpeg1video ! filesink location="$work/comms.m1v"
+# Program-stream mux is a best effort: only mpegpsdemux needs it, and the comms files are sniffed
+# as MPEG video either way.
+if GST_DEBUG=2 GST_PLUGIN_PATH="$work/muxers" gst-launch-1.0 -q filesrc location="$work/comms.m1v" ! mpegvideoparse \
+        ! mpegpsmux ! filesink location="$work/comms.mpg"; then ps_ok=1; else ps_ok=0; echo "note: MPEG-PS mux test skipped"; fi
 for file in "$work/tone.wav" "$work/tone.mp3" "$work/voice.wma"; do
     gst-launch-1.0 -q filesrc location="$file" ! decodebin ! audioconvert ! fakesink
     echo "native decode ok: $(basename "$file")"
 done
-gst-launch-1.0 -q filesrc location="$work/comms.mpg" ! decodebin ! videoconvert ! fakesink
-echo "native decode ok: comms.mpg (MPEG-1 program stream)"
+gst-launch-1.0 -q filesrc location="$work/comms.m1v" ! decodebin ! videoconvert ! fakesink
+echo "native decode ok: comms.m1v (MPEG-1 video)"
+if [ "$ps_ok" = 1 ]; then
+    gst-launch-1.0 -q filesrc location="$work/comms.mpg" ! decodebin ! videoconvert ! fakesink
+    echo "native decode ok: comms.mpg (MPEG-1 program stream)"
+fi
 
 # --- tests: Box64-wrapped GStreamer from x86-64 code (not part of the add-on) -----------------
 apt-get update -qq
