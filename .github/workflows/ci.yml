@@ -63,6 +63,28 @@ jobs:
           name: box64
           path: box64-out/
 
+  wintools:
+    # Windows helpers run inside Wine (native/): built with MinGW, tested under real Wine + Xvfb.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MinGW and Wine
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends gcc-mingw-w64-i686 wine wine32:i386 wine64 xvfb xauth >/dev/null
+          wine --version
+      - name: Build
+        run: scripts/build_wintools.sh wintools-out
+      - name: x3pin keeps the CryptoAPI DLLs loaded (Wine)
+        run: xvfb-run -a tests/wine/run_pin_test.sh wintools-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wintools
+          path: |
+            wintools-out/x3pin.exe
+            wintools-out/wintools-build.json
+
   media:
     # GStreamer add-on for winegstreamer (X3's music, voices, movies). Built once per recipe version
     # on the pinned runtime image, tested there, then reused from its release.
@@ -115,7 +137,7 @@ jobs:
           gh release upload "$tag" media-out/media-addon-arm64.tar.gz media-out/media-addon.json
 
   apk:
-    needs: [test, box64, media]
+    needs: [test, box64, media, wintools]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -123,6 +145,10 @@ jobs:
         with:
           name: box64
           path: box64-out
+      - uses: actions/download-artifact@v4
+        with:
+          name: wintools
+          path: wintools-out
       - uses: actions/download-artifact@v4
         with:
           name: media-addon
@@ -148,6 +174,7 @@ jobs:
         run: |
           python3 -I scripts/fetch_trasc_payload.py --box64 box64-out
           cp media-out/media-addon.json payload/out/assets/payload/media-addon.json
+          cp wintools-out/x3pin.exe wintools-out/wintools-build.json payload/out/assets/payload/
       - name: Build APK
         run: gradle --no-daemon :app:assembleDebug 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
       - name: Surface compiler errors as annotations
@@ -165,7 +192,7 @@ jobs:
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$apk" | tee apk-signing.txt
           actual=$(grep -oP 'Signer #1 certificate SHA-256 digest: \K[0-9a-f]+' apk-signing.txt)
           test "$actual" = "$(cat signing/x3-preview.sha256)"
-          unzip -l "$apk" | grep -E "lib/arm64-v8a/libproot.so|assets/payload/turnip.so|assets/payload/box64$|assets/runner/x3_runner.py|assets/controls/overlay-data.json"
+          unzip -l "$apk" | grep -E "lib/arm64-v8a/libproot.so|assets/payload/turnip.so|assets/payload/box64$|assets/payload/x3pin.exe|assets/runner/x3_runner.py|assets/controls/overlay-data.json"
       - name: Describe the build
         run: |
           apk=app/build/outputs/apk/debug/app-debug.apk

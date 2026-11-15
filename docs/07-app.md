@@ -291,3 +291,43 @@ counter). The present mode was IMMEDIATE, the frame cap 60, and audio ran throug
   Each cycle loaded and unloaded `rsaenh`, `crypt32` and `bcrypt`, together with their emulated
   Unix libraries and wrapped GnuTLS, at about 100–130 ms per cycle. Keeping those DLLs loaded for
   the life of the process would remove most of the delay. That fix is planned next.
+
+### 14 November 2026, AYN Thor, build 0.1.5 (media add-on installed)
+
+**What worked:**
+
+- **Controls:** better, because Wine's gamepad driver was off.
+- **GStreamer:** `winegstreamer` loaded with native GStreamer under Box64. The "Wave Parser",
+  "MPEG-I Stream Splitter" and "AVI Splitter" failures were gone. Wine built an MP3 decode
+  chain: `l3codecx.ax` and `mp3dmod`.
+- **Frame rate:** 47 fps.
+
+**Problems:**
+
+- **Loading was still slow.** 1,467 crypto cycles took 208 s.
+- **Music and voices were still silent.** About 14 s of audio after the MP3 decoder appeared,
+  then silence.
+- **Unregistered decoder class.** X3 asked COM 38 times for class
+  `{874131cb-4ecc-443b-8948-746b89595d20}`, which Wine does not register. The only other trace
+  of that GUID is Wine bug 48763, where X2 and X3 ask for `CLSID_CWMSPDecMediaObject`, the
+  Windows Media Audio **Voice** decoder (format tag 0x000A). That suggests some speech is
+  WMA Voice, which Wine has no decoder for.
+
+**Changes in 0.1.6:**
+
+- **`x3pin.exe`** (`native/x3pin`) now starts X3AP.exe. Once the launcher dialog is idle, it
+  loads `bcrypt`, `crypt32` and `rsaenh` into the game with `CreateRemoteThread(LoadLibraryW)`.
+  The extra reference stops them unloading, so the crypto cycles no longer reload them. CI
+  builds it with MinGW and tests it under real Wine:
+  - a control run shows the DLLs unloading;
+  - with `x3pin`, they stay loaded;
+  - arguments and the exit code pass through.
+
+  `x3-state.json` records the result as `crypto_pin`.
+- **Media diagnostics, for one run:**
+  - A survey of `soundtrack/` and `mov/` records extensions and container/codec, including the
+    codec tags of ASF audio streams, as `media_files`.
+  - Media Wine channels are on: warn and fixme for amstream, quartz, strmbase, winegstreamer,
+    qasf, wmvcore, dmo, msacm, mpeg3, mp3dmod and mfplat, plus trace for amstream, which names
+    each file X3 opens.
+  - The first 8 MB of the Wine log is kept as `x3-wine.start.log` when the log rotates.

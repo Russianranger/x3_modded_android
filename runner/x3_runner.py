@@ -22,6 +22,7 @@ import re
 import secrets
 import shutil
 import signal
+import struct
 import subprocess
 import threading
 import time
@@ -49,12 +50,20 @@ stop_requested = False
 stop_reason = None
 
 
+# Music and voices (fifth device run: still silent with GStreamer present). X3 opens its streams
+# through amstream (IAMMultiMediaStream::OpenFile) and/or ACM; these channels name the files and
+# show where a graph or conversion fails, at a few lines per stream. Trim once audio works.
+MEDIA_DEBUG = ','.join(level + '+' + channel for channel in
+                       ('amstream', 'quartz', 'strmbase', 'winegstreamer', 'qasf', 'wmvcore', 'dmo',
+                        'msacm', 'mpeg3', 'mp3dmod', 'mfplat') for level in ('warn', 'fixme')) + ',trace+amstream'
+
+
 def wine_debug(verbose=False, sound=False):
     # +seh and per-frame traces flood PRoot; Wine's fps channel reports every 1.5 s per swapchain.
-    normal = '-all,+timestamp,+pid,err+all,trace+loaddll,trace+fps'
+    normal = '-all,+timestamp,+pid,err+all,trace+loaddll,trace+fps,' + MEDIA_DEBUG
     return (normal + ',warn+dsound,warn+wave,warn+mmdevapi'
             + (',warn+all,fixme+all,trace+module' if verbose else '')
-            + (',trace+dsound,trace+dsound3d,trace+mmdevapi' if sound else ''))
+            + (',trace+dsound,trace+dsound3d,trace+mmdevapi,trace+msacm,trace+quartz' if sound else ''))
 
 
 def archive_log(path, limit=WINE_LOG_LIMIT):
@@ -173,6 +182,8 @@ class WineLog:
                 if re.search(r'Loaded L".*\\+d3d9\.dll".*: native\s*$', line, re.I):
                     self.fields['native_d3d9_loaded'] = True
                 if re.search(r'DXVK: v?2\.5\.3\b', line): self.fields['dxvk_loaded'] = '2.5.3'
+                pin = re.search(r'x3pin: (\d+) of (\d+) DLLs pinned \(([^)]{0,40})\)', line)
+                if pin: self.fields['crypto_pin'] = f'{pin[1]}/{pin[2]} ({pin[3]})'
                 mode = re.search(r'Present mode: (VK_PRESENT_MODE_\w+)', line)
                 if mode: self.fields['dxvk_present_mode'] = mode[1]
                 if re.search(r'Loaded L".*\\+dsound\.dll".*: (builtin|native)\s*$', line, re.I):
@@ -198,7 +209,9 @@ class WineLog:
                 self.observe(chunk)
                 if written + len(chunk) > self.limit:
                     output.close()
-                    os.replace(self.path, self.path.with_suffix('.overflow.log'))
+                    with self.lock: first = self.fields['wine_log_rotations'] == 0
+                    # The first segment holds start-up (DLL loads, stream set-up): keep it.
+                    os.replace(self.path, self.path.with_suffix('.start.log' if first else '.overflow.log'))
                     output = self.path.open('wb'); written = 0
                     with self.lock: self.fields['wine_log_rotations'] += 1
                 output.write(chunk); output.flush(); written += len(chunk)
@@ -277,6 +290,55 @@ def persist_documents(prefix=PREFIX, saves=SAVES):
     return report
 
 
+ASF_HEADER = bytes.fromhex('3026b2758e66cf11a6d900aa0062ce6c')
+ASF_STREAM_PROPERTIES = bytes.fromhex('9107dcb7b7a9cf118ee600c00c205365')
+ASF_AUDIO = bytes.fromhex('409e69f84d5bcf11a8fd00805f5c442b')
+AUDIO_TAGS = {0x0001: 'pcm', 0x0002: 'adpcm', 0x0011: 'ima-adpcm', 0x000a: 'wma-voice (WMSP)', 0x0050: 'mpeg-audio',
+              0x0055: 'mp3', 0x0160: 'wma1', 0x0161: 'wma2', 0x0162: 'wma-pro', 0x0163: 'wma-lossless'}
+
+
+def sniff_media(head):
+    """Container and audio codec of a file from its first bytes (no decoding)."""
+    if head[:4] == b'RIFF' and head[8:12] == b'WAVE':
+        at = head.find(b'fmt ', 12)
+        tag = struct.unpack_from('<H', head, at + 8)[0] if 0 <= at <= len(head) - 10 else None
+        return 'wav/' + AUDIO_TAGS.get(tag, hex(tag) if tag is not None else '?')
+    if head[:16] == ASF_HEADER:
+        codecs, at = [], 30
+        while at + 24 <= len(head):
+            guid, size = head[at:at + 16], struct.unpack_from('<Q', head, at + 16)[0]
+            if size < 24: break
+            if guid == ASF_STREAM_PROPERTIES and head[at + 24:at + 40] == ASF_AUDIO and at + 80 <= len(head):
+                codecs.append(AUDIO_TAGS.get(struct.unpack_from('<H', head, at + 78)[0], '?'))
+            at += size
+        return 'asf/' + ('+'.join(sorted(set(codecs))) if codecs else '?')
+    if head[:3] == b'ID3' or (len(head) > 1 and head[0] == 0xff and head[1] & 0xe0 == 0xe0):
+        return 'mpeg-audio'
+    if head[:4] == b'OggS': return 'ogg'
+    if head[:4] in (b'\x00\x00\x01\xba', b'\x00\x00\x01\xb3'): return 'mpeg-video'
+    if head[:2] == b'\x1f\x8b': return 'gzip'
+    return 'other'
+
+
+def media_survey(game=GAME, sniff_per_folder=60):
+    """What X3's music, speech and movie folders hold: counts per extension and container/codec."""
+    survey = {}
+    for top in [game, *(child for child in game.iterdir() if child.name.lower() == 'addon' and child.is_dir())] if game.is_dir() else []:
+        for folder in (child for child in top.iterdir() if child.is_dir() and child.name.lower() in ('soundtrack', 'mov', 's')):
+            kinds, sniffed = {}, 0
+            for entry in sorted(folder.iterdir()):
+                if not entry.is_file() or entry.is_symlink(): continue
+                kind = entry.suffix.lower() or '(none)'
+                if sniffed < sniff_per_folder and entry.suffix.lower() in ('.mp3', '.dat', '.wav', '.wma', '.ogg', '.mpg', ''):
+                    try:
+                        with entry.open('rb') as handle: kind += ':' + sniff_media(handle.read(65536))
+                        sniffed += 1
+                    except OSError: kind += ':unreadable'
+                kinds[kind] = kinds.get(kind, 0) + 1
+            survey[str(folder.relative_to(game))] = kinds
+    return survey
+
+
 def program_path(relative, game=GAME):
     """Resolve a program inside the imported game folder; reject anything that could escape it."""
     if not isinstance(relative, str) or not relative or '\\' in relative or '\0' in relative or len(relative) > 512:
@@ -325,12 +387,23 @@ def windows_path(relative):
     return 'D:\\' + relative.replace('/', '\\')
 
 
-def build_command(request, info):
-    """Wine command line and Unix working directory (the program's own folder becomes its cwd)."""
+X3PIN = HERE / 'x3pin.exe'      # native/x3pin: keeps the CryptoAPI DLLs loaded in the game
+X3PIN_WINDOWS = 'Z:' + str(X3PIN).replace('/', '\\')
+
+
+def build_command(request, info, pin=None):
+    """Wine command line and Unix working directory (the program's own folder becomes its cwd).
+
+    X3AP.exe starts through x3pin.exe when it is bundled: 1,467 CryptoAPI open/close cycles made a
+    LxXRM new game take 208 s to load on the Thor, each cycle reloading rsaenh/crypt32/bcrypt and
+    their emulated Unix libraries. x3pin holds one reference to each for the life of the game.
+    """
     relative = request['program']
     desktop = ['explorer', '/desktop=X3,' + request['resolution']]
+    if pin is None: pin = X3PIN.is_file()
     if info['kind'] == 'exe':
         program = [windows_path(relative)]
+        if pin and request.get('mode') == 'game': program = [X3PIN_WINDOWS] + program
     else:
         # Batch installers (e.g. LxXRM's SETUP.bat) need a console; /k keeps it open for reading.
         program = ['cmd.exe', '/k', windows_path(relative)]
@@ -550,6 +623,9 @@ class Supervisor:
         with self.timed('graphics_check'): self.check_graphics()
         self.prepare_prefix()
         self.update(saves=persist_documents())
+        if self.request.get('mode') == 'game':
+            try: self.update(media_files=media_survey())
+            except OSError as error: self.update(media_files={'error': str(error)})
         if self.request.get('renderer', 'turnip') == 'turnip':
             self.update(dxvk_d3d9_sha256=client_vulkan.install_d3d9(HERE, PREFIX, GAME))
         devices = PREFIX / 'dosdevices'; devices.mkdir(exist_ok=True)

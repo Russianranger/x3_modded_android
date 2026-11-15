@@ -105,8 +105,13 @@ class RequestTests(unittest.TestCase):
                 x3_runner.validate_request(request, self.game)
 
     def test_commands(self):
-        args, cwd = x3_runner.build_command(self.request, {"kind": "exe"})
+        args, cwd = x3_runner.build_command(self.request, {"kind": "exe"}, pin=False)
         self.assertEqual(args[2:], ["explorer", "/desktop=X3,1280x720", "D:\\X3AP.exe", "-skipintro"])
+        args, _ = x3_runner.build_command(self.request, {"kind": "exe"}, pin=True)
+        self.assertEqual(args[4:], [x3_runner.X3PIN_WINDOWS, "D:\\X3AP.exe", "-skipintro"])
+        self.assertTrue(x3_runner.X3PIN_WINDOWS.startswith("Z:\\") and x3_runner.X3PIN_WINDOWS.endswith("\\x3pin.exe"))
+        tool = dict(self.request, mode="program", program="tools/X3Editor.exe")
+        self.assertEqual(x3_runner.build_command(tool, {"kind": "exe"}, pin=True)[0][4:], ["D:\\tools\\X3Editor.exe", "-skipintro"])
         self.assertEqual(cwd, x3_runner.GAME)
         batch = dict(self.request, program="LxXRM/SETUP.bat", arguments=[])
         args, cwd = x3_runner.build_command(batch, {"kind": "bat"})
@@ -256,6 +261,43 @@ class FirstDeviceRunTests(unittest.TestCase):
         self.assertTrue(sample["game_running"])
         self.assertEqual(sample["processes"], 2)      # the unmarked X3AP.exe is not ours
         self.assertEqual(sorted(t["pid"] for t in sample["threads"]), [4100, 4300])
+
+
+class MediaSurveyTests(unittest.TestCase):
+    @staticmethod
+    def asf(tag):
+        import struct
+        wave = struct.pack("<HHIIHHH", tag, 1, 16000, 2000, 640, 16, 0)
+        props = (x3_runner.ASF_AUDIO + bytes(16) + bytes(8) + struct.pack("<IIH", len(wave), 0, 1) + bytes(4) + wave)
+        stream = x3_runner.ASF_STREAM_PROPERTIES + struct.pack("<Q", 24 + len(props)) + props
+        return x3_runner.ASF_HEADER + struct.pack("<QIBB", 30 + len(stream), 1, 1, 2) + stream
+
+    def test_sniff(self):
+        import struct
+        self.assertEqual(x3_runner.sniff_media(self.asf(0x000a)), "asf/wma-voice (WMSP)")
+        self.assertEqual(x3_runner.sniff_media(self.asf(0x0161)), "asf/wma2")
+        self.assertEqual(x3_runner.sniff_media(b"ID3\x03\x00" + bytes(20)), "mpeg-audio")
+        self.assertEqual(x3_runner.sniff_media(b"\xff\xfb\x90\x00" + bytes(20)), "mpeg-audio")
+        wav = b"RIFF" + bytes(4) + b"WAVEfmt " + struct.pack("<IH", 16, 0x0055) + bytes(14)
+        self.assertEqual(x3_runner.sniff_media(wav), "wav/mp3")
+        self.assertEqual(x3_runner.sniff_media(b"\x00\x00\x01\xba" + bytes(8)), "mpeg-video")
+        self.assertEqual(x3_runner.sniff_media(b"hello"), "other")
+
+    def test_survey_counts_folders_case_insensitively(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            game = Path(tmp)
+            (game / "Soundtrack").mkdir(); (game / "addon" / "mov").mkdir(parents=True)
+            (game / "Soundtrack" / "00001.mp3").write_bytes(b"ID3" + bytes(10))
+            (game / "Soundtrack" / "readme.txt").write_text("x")
+            (game / "addon" / "mov" / "00144.dat").write_bytes(self.asf(0x000a))
+            survey = x3_runner.media_survey(game)
+        self.assertEqual(survey["Soundtrack"], {".mp3:mpeg-audio": 1, ".txt": 1})
+        self.assertEqual(survey["addon/mov"], {".dat:asf/wma-voice (WMSP)": 1})
+
+    def test_x3pin_result_is_recorded(self):
+        log = x3_runner.WineLog(Path(tempfile.gettempdir()) / "unused.log", game=True)
+        log.observe(b"x3pin: rsaenh.dll pinned in pid 292\nx3pin: 3 of 3 DLLs pinned (program idle)\n")
+        self.assertEqual(log.snapshot()[0]["crypto_pin"], "3/3 (program idle)")
 
 
 class SavesTests(unittest.TestCase):

@@ -21,7 +21,7 @@ final class GameRuntime {
         "client_metrics.py","log_retention.py","runtime_probe.py","pe_info.py"};
     private static final String[] PAYLOAD={"libasound_module_pcm_trasc.so","audio-bundle.json","turnip.so","turnip-26.0.0.so","vulkan-probe",
         "dxvk-d3d9.dll","dxvk-d3d9-x64.dll","vulkan-bundle.json","wineserver","wineserver-patch.json","x11-frame-bridge","presentation-bundle.json",
-        "payload-provenance.json","box64","box64-build.json"};
+        "payload-provenance.json","box64","box64-build.json","x3pin.exe","wintools-build.json"};
     private static final String[] EXECUTABLE={"vulkan-probe","wineserver","x11-frame-bridge","box64"};
     final Context context;
     final AppPaths paths;
