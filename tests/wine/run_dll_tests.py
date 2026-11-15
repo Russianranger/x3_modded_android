@@ -136,6 +136,8 @@ try:
             any_fixed = any_fixed or bool(fixed)
             print(f"{dll}/{test}: stock   {stock_summary}\n{dll}/{test}: patched {patched_summary}")
             print(f"{dll}/{test}: fixed by the patches: {', '.join(fixed) or 'none'}")
+            if patched_failed:
+                print(f"{dll}/{test}: still failing (failed with stock too): {', '.join(sorted(patched_failed & stock_failed))}")
             if "no summary" in patched_summary:
                 ok = False
                 print(f"{dll}/{test}: the patched run did not finish")
