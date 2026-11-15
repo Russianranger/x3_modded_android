@@ -36,7 +36,9 @@ ok = True
 for name in manifest["dlls"]:
     dll = name[:-4]
     installed = target / name
-    stock = installed.with_suffix(".dll.stock")
+    # Keep the stock copy outside lib/wine: wineboot installs (and registers) every DLL-like file
+    # it finds there, and COM then loaded "amstream.dll.stock" in both runs.
+    stock = pathlib.Path(tempfile.mkdtemp(prefix="stock-")) / name
     shutil.copy2(installed, stock)
     try:
         stock_failed, stock_summary, stock_output = run(dlls / f"{dll}_test.exe", dll)

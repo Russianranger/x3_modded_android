@@ -63,9 +63,22 @@ PRoot rootfs (TRASC client runtime)
      whether the exe is Large Address Aware.
 4. Launch the game:
    - Pick `X3AP.exe` and a resolution, then tap **Launch**.
-   - The defaults are Turnip 24.3.4, the balanced CPU profile, `-skipintro` and a 1280×720 Wine
+   - The defaults are Turnip 24.3.4, the **fast** CPU profile, `-skipintro` and a 1280×720 Wine
      desktop.
    - The first launch creates the Wine prefix, so it takes longer than later ones.
+   - **CPU emulation** sets Box64's code translator for X3AP.exe only:
+     - **fast** (default): Box64's own "fast" profile. Bigger translated blocks that also cover
+       Windows code, no re-translation of code that shares a page with data being written, and
+       lighter flag and call/return handling. The x86 memory-ordering barriers stay on.
+     - **fastest**: the same without those barriers.
+     - **balanced**: the 0.1.6 settings.
+     - **accurate**: balanced plus exact x87 and rounding.
+
+     If X3 crashes or misbehaves on fast or fastest, go back to balanced.
+   - **Keep X3's main thread on the fastest CPU core** (on by default) asks Android's scheduler for
+     the biggest core at full clock (`uclamp.min`), for the thread that does all of a load.
+   - The in-game status line shows **last load N s**: the last stretch without a frame, taken from
+     Wine's present trace. It's the number to compare between profiles.
 5. In X3's own settings, turn **EAX off**. Pick a resolution that matches the Wine desktop.
 
 ### Saves and settings
@@ -98,24 +111,41 @@ card and the runner both warn when they detect the Steam executable.
 ## Media add-on (music, voices, movies)
 
 X3 plays sound effects through DirectSound, which works without the add-on. Music, comms voices
-and movies go through DirectShow instead. In Wine 10, DirectShow's WAV, MPEG audio and AVI
-splitters and its MP3 decoder live in `winegstreamer`, which needs GStreamer.
+and the comms faces go through DirectShow instead. In Wine 10, DirectShow's WAV, MPEG audio and
+AVI splitters, its MP3 decoder and its GStreamer splitter (which handles the MPEG-1 video and ASF
+files) live in `winegstreamer`, which needs GStreamer.
 
-- **Evidence:** the fourth device run logged 88 failed autoplug attempts each for "Wave Parser",
-  "MPEG-I Stream Splitter" and "AVI Splitter".
+- **What X3 plays** (survey of the Thor install, LxXRM):
+  - `soundtrack/`: MP3.
+  - `mov/` and `addon/mov/`: `.dat` files that are either MPEG-1 video (the comms faces) or ASF
+    with WMA 2 audio (Betty and NPC speech).
 - **Install:** on the **Runtime** card, tap **Download media add-on**. It unpacks native arm64
-  GStreamer 1.22 (Debian Bookworm: base, good, ugly, plus `mpegpsdemux`) into the runtime.
+  GStreamer 1.22 from Debian Bookworm into the runtime: base, good, ugly and libav (FFmpeg's
+  decoders, which bring WMA 2), plus `mpegpsdemux` and the MPEG video parser from bad.
+  Version 2 adds libav. If the card shows an older add-on, tap the button again.
 - **Effect:** the runner sees `/etc/x3-media-addon.json` and stops disabling `winegstreamer`.
   Box64 maps `winegstreamer.so` onto the native libraries. All 206 GStreamer and GLib functions it
   imports are among those Box64 `2f130fab` wraps, which was checked against the binary.
-- **Testing:** CI builds the add-on inside the pinned runtime image and tests three things:
-  - the required elements exist;
-  - native WAV and MP3 decodes work;
-  - an x86-64 program under the runtime's Box64 decodes both through the wrapped libraries, with
-    a callback into emulated code.
+- **Testing:** CI builds the add-on inside the pinned runtime image and tests:
+  - that the required elements exist;
+  - native decodes of WAV, MP3, WMA 2 in ASF, and MPEG-1 video as an elementary stream and as a
+    program stream (`tests/media/fixtures`, made from ffmpeg's test pattern);
+  - the same decodes from an x86-64 program under the runtime's Box64, through the wrapped
+    libraries, with a callback into emulated code.
 
-  The archive is published once as the `media-addon-v1` release, and the APK pins its hash.
+  The archive is published once per version as a `media-addon-vN` release, and the APK pins its
+  hash.
 - **Reinstalling the runtime** removes the add-on. Download it again afterwards.
+
+### Patched Wine DLLs
+
+The comms faces reach X3 through Wine's `amstream.dll` (DirectDraw media streams). Wine 10.0 has
+a bug there that crashed the sixth Thor run when an NPC was hailed (see the device runs below).
+`patches/wine/` holds the fix. CI builds `amstream.dll` from the `wine-10.0` tag with the patch,
+then runs Wine's own amstream conformance tests twice on the runtime's exact Wine build (Kron4ek
+10.0 WoW64): once with the stock DLL, once with the patched one. The patched run must pass a test
+the stock run fails and must not fail any test the stock run passes. The app binds the DLL over the
+runtime's copy, and the runner checks its hash (`wine_patches` in `x3-state.json`).
 
 ## Controls
 
@@ -181,8 +211,10 @@ python3 -I -m unittest discover -s tests -v
 
 - **Display:** frames come over RFB only. TRASC's native presentation library is tied to TRASC's
   package name, so its zero-copy path is not available yet.
-- **Music, comms voices and movies** need the media add-on (see below). Without it, only sound
-  effects play.
+- **Music, comms voices and the comms faces** need the media add-on (see below). Without it, only
+  sound effects play. Music was still silent with it in the sixth Thor run; that is open.
+- **Loading** from the menu into a game took 180 s in the sixth Thor run. It is bound by
+  emulating X3's own code, so settings alone are unlikely to reach 30 s.
 - **Route A** (native Linux `X3AP_main` via BOX32) is not wired into the app.
 
 ## Device runs
@@ -331,3 +363,51 @@ counter). The present mode was IMMEDIATE, the frame cap 60, and audio ran throug
     qasf, wmvcore, dmo, msacm, mpeg3, mp3dmod and mfplat, plus trace for amstream, which names
     each file X3 opens.
   - The first 8 MB of the Wine log is kept as `x3-wine.start.log` when the log rotates.
+
+### 14 November 2026, AYN Thor, build 0.1.6
+
+**What worked:**
+
+- **Crypto pinning:** the CryptoAPI reload churn was gone, one load instead of about 2,190.
+  Menu to game went from 454 s in the run before (no pinning) to 180 s, measured as the pause
+  in Wine's present trace.
+  The `crypto_pin` field stayed empty only because `x3pin`'s report went to a console nobody
+  read.
+- **Media survey:** see the media add-on section for what X3's folders hold.
+
+**Problems:**
+
+- **Still too slow.** During the 180 s, X3's main thread ran at 80–100 % of one core, mostly
+  the Cortex-X3. Nothing else was busy. That is emulated game code, not Wine or I/O.
+- **No music.** The menu produced about 22 s of non-silent output through X3's single DirectSound
+  stream, then silence. The MP3 chain (`l3codecx.ax`, `mp3dmod`) was built. Not explained yet.
+- **No Betty or NPC voices.** They are WMA 2 in ASF, and add-on v1 had no WMA decoder.
+- **Crash on hailing an NPC.** The game died with an unhandled page fault while the comms
+  face video started:
+  - X3 changes the DirectDraw stream's format while its graph is running, which needs a
+    reconnect.
+  - The upstream pin refuses to disconnect while running (`VFW_E_NOT_STOPPED`), but Wine's
+    `ddraw_IDirectDrawMediaStream_SetFormat` went on and disconnected its own side, which frees
+    the connection's media type.
+  - The upstream filter kept delivering frames, and `ddraw_meminput_Receive` read the
+    bit depth through the freed, NULL format block.
+
+**Changes in 0.1.7:**
+
+- **Media add-on v2** with libav, for WMA 2 voices. Tap **Download media add-on** again.
+- **Patched `amstream.dll`** (`patches/wine/0001`): when the upstream disconnect fails, `SetFormat`
+  now fails cleanly and leaves both sides connected with the old format. `Receive` also refuses
+  samples when it has no format. See "Patched Wine DLLs".
+- **Load time:**
+  - CPU profiles **fast** (new default) and **fastest**, written into X3AP.exe's Box64 section.
+  - The main-thread core boost.
+  - **last load N s** in the status line and `present_pauses_seconds` in `x3-state.json`.
+  - `x3-threads.log` now records the main thread's user and system time, page faults and time
+    spent waiting for a CPU.
+- **Diagnostics:**
+  - `x3pin` writes its report to a file the runner reads (`X3PIN_LOG`).
+  - The media channels were traced on the wrong name in 0.1.6: amstream logs on Wine's
+    `quartz` channel. **Sound diagnostics** now traces `quartz`, `dsound` and `msacm`.
+  - `x3-audio.log` reports peak and RMS levels per interval, so silence and quiet music can be
+    told apart.
+  - The survey tells MPEG program streams from elementary video streams.
