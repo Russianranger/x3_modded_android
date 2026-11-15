@@ -1,0 +1,132 @@
+From: X3 Modded <noreply@github.com>
+Subject: [PATCH] winegstreamer: Flush the DirectShow decoders on a seek.
+
+The quartz transform filters (MPEG video, MPEG audio, MPEG layer-3 decoders) ignored
+BeginFlush/EndFlush apart from forwarding them, so after a seek the GStreamer decoder kept its
+queued frames and reference pictures: the first frames after the seek showed, or were predicted
+from, the old position. X3: Albion Prelude keeps all comms faces in one MPEG-1 movie and seeks
+between them, so faces of other pilots flickered through.
+
+On EndFlush, flush the wg_transform and its sample queue. For video, also skip input until the
+next sync point (if the source marks them at all) and drop decoded frames that end before the new
+segment starts.
+---
+diff --git a/dlls/winegstreamer/quartz_transform.c b/dlls/winegstreamer/quartz_transform.c
+index ff57ea0..6c48c65 100644
+--- a/dlls/winegstreamer/quartz_transform.c
++++ b/dlls/winegstreamer/quartz_transform.c
+@@ -43,6 +43,14 @@ struct transform
+     wg_transform_t transform;
+     struct wg_sample_queue *sample_queue;
+ 
++    /* After a flush (a seek), a video decoder must not predict from reference pictures of the
++     * old position: input is skipped until the next sync point, if the source marks them, and
++     * output that ends before the new segment's start is dropped. */
++    BOOL seen_sync_point;
++    BOOL need_sync_point;
++    BOOL after_flush;
++    unsigned int skipped;
++
+     const struct transform_ops *ops;
+ };
+ 
+@@ -110,8 +118,11 @@ static HRESULT transform_init_stream(struct strmbase_filter *iface)
+                 &attrs, &filter->transform)))
+         {
+             wg_sample_queue_destroy(filter->sample_queue);
++            filter->sample_queue = NULL;
+             return hr;
+         }
++        filter->seen_sync_point = filter->need_sync_point = filter->after_flush = FALSE;
++        filter->skipped = 0;
+ 
+         hr = IMemAllocator_Commit(filter->source.pAllocator);
+         if (FAILED(hr))
+@@ -132,6 +143,8 @@ static HRESULT transform_cleanup_stream(struct strmbase_filter *iface)
+         EnterCriticalSection(&filter->filter.stream_cs);
+         wg_transform_destroy(filter->transform);
+         wg_sample_queue_destroy(filter->sample_queue);
++        filter->transform = 0;
++        filter->sample_queue = NULL;
+         LeaveCriticalSection(&filter->filter.stream_cs);
+     }
+ 
+@@ -313,6 +326,19 @@ static HRESULT WINAPI transform_sink_receive(struct strmbase_sink *pin, IMediaSa
+     if (filter->sink.flushing)
+         return S_FALSE;
+ 
++    if (IMediaSample_IsSyncPoint(sample) == S_OK)
++    {
++        if (filter->need_sync_point)
++            TRACE("Resuming at a sync point after skipping %u samples.\n", filter->skipped);
++        filter->seen_sync_point = TRUE;
++        filter->need_sync_point = FALSE;
++    }
++    else if (filter->need_sync_point && filter->skipped < 300)
++    {
++        ++filter->skipped;
++        return S_OK;
++    }
++
+     hr = wg_sample_create_quartz(sample, &wg_sample);
+     if (FAILED(hr))
+         return hr;
+@@ -352,6 +378,20 @@ static HRESULT WINAPI transform_sink_receive(struct strmbase_sink *pin, IMediaSa
+ 
+         wg_sample_queue_flush(filter->sample_queue, false);
+ 
++        if (filter->after_flush)
++        {
++            REFERENCE_TIME start, stop;
++
++            if (IMediaSample_GetTime(output_sample, &start, &stop) == S_OK && stop <= 0)
++            {
++                TRACE("Dropping a frame from before the seek target, %s-%s.\n",
++                        debugstr_time(start), debugstr_time(stop));
++                IMediaSample_Release(output_sample);
++                continue;
++            }
++            filter->after_flush = FALSE;
++        }
++
+         hr = IMemInputPin_Receive(filter->source.pMemInputPin, output_sample);
+         if (FAILED(hr))
+         {
+@@ -365,11 +405,37 @@ static HRESULT WINAPI transform_sink_receive(struct strmbase_sink *pin, IMediaSa
+     return S_OK;
+ }
+ 
++static HRESULT transform_sink_end_flush(struct strmbase_sink *pin)
++{
++    struct transform *filter = impl_from_strmbase_filter(pin->pin.filter);
++
++    /* A flush comes with a seek: drop what the GStreamer element holds, queued input and
++     * frames as well as reference pictures, or it goes on from the old position. */
++    EnterCriticalSection(&filter->filter.stream_cs);
++    if (filter->transform)
++    {
++        wg_transform_flush(filter->transform);
++        wg_sample_queue_flush(filter->sample_queue, true);
++        if (IsEqualGUID(&filter->sink.pin.mt.majortype, &MEDIATYPE_Video))
++        {
++            filter->need_sync_point = filter->seen_sync_point;
++            filter->after_flush = TRUE;
++            filter->skipped = 0;
++        }
++    }
++    LeaveCriticalSection(&filter->filter.stream_cs);
++
++    if (filter->source.pin.peer)
++        return IPin_EndFlush(filter->source.pin.peer);
++    return S_OK;
++}
++
+ static const struct strmbase_sink_ops sink_ops =
+ {
+     .base.pin_query_accept = transform_sink_query_accept,
+     .base.pin_query_interface = transform_sink_query_interface,
+     .pfnReceive = transform_sink_receive,
++    .sink_end_flush = transform_sink_end_flush,
+ };
+ 
+ static HRESULT transform_source_query_accept(struct strmbase_pin *pin, const AM_MEDIA_TYPE *mt)

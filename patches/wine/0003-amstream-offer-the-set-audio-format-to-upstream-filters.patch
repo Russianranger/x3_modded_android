@@ -1,0 +1,167 @@
+From: X3 Modded <noreply@github.com>
+Subject: [PATCH] amstream: Offer the application's audio format to upstream filters.
+
+Once the application has set a format on an audio stream, ReceiveConnection() accepts nothing
+else, but the pin still enumerated a fixed 11025 Hz mono type with no subtype. A converting
+upstream filter (the GStreamer splitter resamples and remixes) then had nothing usable to connect
+with. Enumerate exactly the set format as PCM instead. X3: Albion Prelude sets its mixer format,
+and its 48 kHz menu music and its speech come at other rates; without this neither renders.
+---
+diff --git a/dlls/amstream/audiostream.c b/dlls/amstream/audiostream.c
+index d76156c..3cd60dd 100644
+--- a/dlls/amstream/audiostream.c
++++ b/dlls/amstream/audiostream.c
+@@ -790,6 +790,7 @@ struct enum_media_types
+     IEnumMediaTypes IEnumMediaTypes_iface;
+     LONG refcount;
+     unsigned int index;
++    struct audio_stream *stream;
+ };
+ 
+ static const IEnumMediaTypesVtbl enum_media_types_vtbl;
+@@ -829,7 +830,10 @@ static ULONG WINAPI enum_media_types_Release(IEnumMediaTypes *iface)
+     ULONG refcount = InterlockedDecrement(&enum_media_types->refcount);
+     TRACE("%p decreasing refcount to %lu.\n", enum_media_types, refcount);
+     if (!refcount)
++    {
++        IAMMediaStream_Release(&enum_media_types->stream->IAMMediaStream_iface);
+         free(enum_media_types);
++    }
+     return refcount;
+ }
+ 
+@@ -855,17 +859,31 @@ static HRESULT WINAPI enum_media_types_Next(IEnumMediaTypes *iface, ULONG count,
+ 
+     if (count && !enum_media_types->index)
+     {
++        struct audio_stream *stream = enum_media_types->stream;
++        const WAVEFORMATEX *format = &wfx;
++
+         mts[0] = CoTaskMemAlloc(sizeof(AM_MEDIA_TYPE));
+         memset(mts[0], 0, sizeof(AM_MEDIA_TYPE));
+         mts[0]->majortype = MEDIATYPE_Audio;
+         mts[0]->subtype = GUID_NULL;
++        /* Once the application has set a format, ReceiveConnection() takes nothing else. Offer
++         * exactly that format, as PCM, so that an upstream filter that can convert (the GStreamer
++         * splitter resamples and remixes) connects with it. X3: Albion Prelude sets its mixer's
++         * format, and its menu music and speech come at other rates. */
++        EnterCriticalSection(&stream->cs);
++        if (stream->format.wFormatTag == WAVE_FORMAT_PCM)
++        {
++            format = &stream->format;
++            mts[0]->subtype = MEDIASUBTYPE_PCM;
++        }
+         mts[0]->bFixedSizeSamples = TRUE;
+         mts[0]->bTemporalCompression = FALSE;
+-        mts[0]->lSampleSize = 2;
++        mts[0]->lSampleSize = format->nBlockAlign;
+         mts[0]->formattype = FORMAT_WaveFormatEx;
+         mts[0]->cbFormat = sizeof(WAVEFORMATEX);
+         mts[0]->pbFormat = CoTaskMemAlloc(sizeof(WAVEFORMATEX));
+-        memcpy(mts[0]->pbFormat, &wfx, sizeof(WAVEFORMATEX));
++        memcpy(mts[0]->pbFormat, format, sizeof(WAVEFORMATEX));
++        LeaveCriticalSection(&stream->cs);
+ 
+         ++enum_media_types->index;
+         *ret_count = 1;
+@@ -909,6 +927,8 @@ static HRESULT WINAPI enum_media_types_Clone(IEnumMediaTypes *iface, IEnumMediaT
+     object->IEnumMediaTypes_iface.lpVtbl = &enum_media_types_vtbl;
+     object->refcount = 1;
+     object->index = enum_media_types->index;
++    object->stream = enum_media_types->stream;
++    IAMMediaStream_AddRef(&object->stream->IAMMediaStream_iface);
+ 
+     *out = &object->IEnumMediaTypes_iface;
+     return S_OK;
+@@ -1113,6 +1133,7 @@ static HRESULT WINAPI audio_sink_QueryAccept(IPin *iface, const AM_MEDIA_TYPE *m
+ 
+ static HRESULT WINAPI audio_sink_EnumMediaTypes(IPin *iface, IEnumMediaTypes **enum_media_types)
+ {
++    struct audio_stream *stream = impl_from_IPin(iface);
+     struct enum_media_types *object;
+ 
+     TRACE("iface %p, enum_media_types %p.\n", iface, enum_media_types);
+@@ -1126,6 +1147,8 @@ static HRESULT WINAPI audio_sink_EnumMediaTypes(IPin *iface, IEnumMediaTypes **e
+     object->IEnumMediaTypes_iface.lpVtbl = &enum_media_types_vtbl;
+     object->refcount = 1;
+     object->index = 0;
++    object->stream = stream;
++    IAMMediaStream_AddRef(&stream->IAMMediaStream_iface);
+ 
+     *enum_media_types = &object->IEnumMediaTypes_iface;
+     return S_OK;
+diff --git a/dlls/amstream/tests/amstream.c b/dlls/amstream/tests/amstream.c
+index 872031c..05a046b 100644
+--- a/dlls/amstream/tests/amstream.c
++++ b/dlls/amstream/tests/amstream.c
+@@ -3804,6 +3804,62 @@ static void test_audiostream_set_format(void)
+     ok(!ref, "Got outstanding refcount %ld.\n", ref);
+ }
+ 
++/* X3: Albion Prelude sets its mixer format on the audio stream before OpenFile(), and its menu
++ * music and speech come at other rates. The stream then offers exactly that format as PCM, so
++ * that a converting upstream filter can connect with it. */
++static void test_audiostream_enum_set_format(void)
++{
++    static const WAVEFORMATEX format =
++    {
++        .wFormatTag = WAVE_FORMAT_PCM,
++        .nChannels = 2,
++        .nSamplesPerSec = 44100,
++        .nAvgBytesPerSec = 44100 * 4,
++        .nBlockAlign = 4,
++        .wBitsPerSample = 16,
++    };
++    IAMMultiMediaStream *mmstream = create_ammultimediastream();
++    IAudioMediaStream *audio_stream;
++    IEnumMediaTypes *enummt;
++    IMediaStream *stream;
++    AM_MEDIA_TYPE *mt;
++    ULONG count, ref;
++    HRESULT hr;
++    IPin *pin;
++
++    hr = IAMMultiMediaStream_AddMediaStream(mmstream, NULL, &MSPID_PrimaryAudio, 0, &stream);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    hr = IMediaStream_QueryInterface(stream, &IID_IAudioMediaStream, (void **)&audio_stream);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    hr = IMediaStream_QueryInterface(stream, &IID_IPin, (void **)&pin);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    hr = IAudioMediaStream_SetFormat(audio_stream, &format);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++
++    hr = IPin_EnumMediaTypes(pin, &enummt);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    hr = IEnumMediaTypes_Next(enummt, 1, &mt, &count);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    if (hr == S_OK)
++    {
++        ok(IsEqualGUID(&mt->majortype, &MEDIATYPE_Audio), "Got major type %s.\n", wine_dbgstr_guid(&mt->majortype));
++        ok(IsEqualGUID(&mt->subtype, &MEDIASUBTYPE_PCM), "Got subtype %s.\n", wine_dbgstr_guid(&mt->subtype));
++        ok(mt->lSampleSize == 4, "Got sample size %lu.\n", mt->lSampleSize);
++        ok(mt->cbFormat == sizeof(WAVEFORMATEX), "Got format size %lu.\n", mt->cbFormat);
++        ok(!memcmp(mt->pbFormat, &format, sizeof(format)), "Format blocks didn't match.\n");
++        CoTaskMemFree(mt->pbFormat);
++        CoTaskMemFree(mt);
++    }
++    IEnumMediaTypes_Release(enummt);
++
++    IPin_Release(pin);
++    IAudioMediaStream_Release(audio_stream);
++    ref = IAMMultiMediaStream_Release(mmstream);
++    ok(!ref, "Got outstanding refcount %ld.\n", ref);
++    ref = IMediaStream_Release(stream);
++    ok(!ref, "Got outstanding refcount %ld.\n", ref);
++}
++
+ static void test_audiostream_receive_connection(void)
+ {
+     WAVEFORMATEXTENSIBLE extensible_format;
+@@ -9959,6 +10015,7 @@ START_TEST(amstream)
+     test_audiostream_get_format();
+     test_audiostream_set_format();
+     test_audiostream_receive_connection();
++    test_audiostream_enum_set_format();
+     test_audiostream_receive();
+     test_audiostream_initialize();
+     test_audiostream_begin_flush_end_flush();

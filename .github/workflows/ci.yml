@@ -106,29 +106,32 @@ jobs:
         run: |
           sudo -E apt-get update -qq
           sudo -E apt-get install -y -q -o Dpkg::Use-Pty=0 --no-install-recommends gcc-mingw-w64-i686 gcc-mingw-w64-x86-64 \
-            flex bison make gcc xvfb xauth libfreetype6 libfontconfig1 libxcursor1 libxi6 libxrandr2 libxrender1 \
-            libxext6 libxinerama1 libgl1 libglx-mesa0 libgl1-mesa-dri
+            flex bison make gcc pkg-config xvfb xauth libfreetype6 libfontconfig1 libxcursor1 libxi6 libxrandr2 libxrender1 \
+            libxext6 libxinerama1 libgl1 libglx-mesa0 libgl1-mesa-dri \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly gstreamer1.0-plugins-bad gstreamer1.0-libav
       - name: Reuse a build of the same patches and recipe
         id: cache
         uses: actions/cache@v4
         with:
           path: wine-dlls-out
-          key: winedlls-10.0-${{ hashFiles('patches/wine/**', 'scripts/build_wine_dlls.sh') }}
+          key: winedlls-10.0-${{ hashFiles('patches/wine/**', 'scripts/build_wine_dlls.sh', 'tests/wine/x3media.c') }}
       - name: Build patched DLLs and their tests from wine-10.0
         if: steps.cache.outputs.cache-hit != 'true'
         run: scripts/build_wine_dlls.sh wine-dlls-out
-      - name: Wine conformance tests, stock vs patched, on the runtime's Wine 10.0
-        timeout-minutes: 30
+      - name: Wine conformance tests and X3 media scenarios, stock vs patched, on the runtime's Wine 10.0
+        timeout-minutes: 40
         run: |
           curl -fsSL --retry 3 -o wine.tar.xz https://github.com/Kron4ek/Wine-Builds/releases/download/10.0/wine-10.0-amd64-wow64.tar.xz
           echo "aeebbbf239e548f0136f1cd72a2e109dd9a572a8f703da3c09fa40d74d5c255f  wine.tar.xz" | sha256sum -c -
           tar -xJf wine.tar.xz
-          xvfb-run -a python3 -I tests/wine/run_dll_tests.py wine-10.0-amd64-wow64 wine-dlls-out
+          xvfb-run -a python3 -I tests/wine/run_dll_tests.py wine-10.0-amd64-wow64 wine-dlls-out tests/media/fixtures
       - uses: actions/upload-artifact@v4
         with:
           name: wine-dlls
           path: |
             wine-dlls-out/*.dll
+            wine-dlls-out/*.exe
             wine-dlls-out/wine-dlls.json
 
   media:
@@ -225,7 +228,7 @@ jobs:
           python3 -I scripts/fetch_trasc_payload.py --box64 box64-out
           cp media-out/media-addon.json payload/out/assets/payload/media-addon.json
           cp wintools-out/x3pin.exe wintools-out/wintools-build.json payload/out/assets/payload/
-          cp wine-dlls-out/amstream.dll wine-dlls-out/wine-dlls.json payload/out/assets/payload/
+          cp wine-dlls-out/amstream.dll wine-dlls-out/winegstreamer.dll wine-dlls-out/wine-dlls.json payload/out/assets/payload/
       - name: Build APK
         run: gradle --no-daemon :app:assembleDebug 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
       - name: Surface compiler errors as annotations
@@ -243,7 +246,7 @@ jobs:
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$apk" | tee apk-signing.txt
           actual=$(grep -oP 'Signer #1 certificate SHA-256 digest: \K[0-9a-f]+' apk-signing.txt)
           test "$actual" = "$(cat signing/x3-preview.sha256)"
-          unzip -l "$apk" | grep -E "lib/arm64-v8a/libproot.so|assets/payload/turnip.so|assets/payload/box64$|assets/payload/x3pin.exe|assets/payload/amstream.dll|assets/runner/x3_runner.py|assets/controls/overlay-data.json"
+          unzip -l "$apk" | grep -E "lib/arm64-v8a/libproot.so|assets/payload/turnip.so|assets/payload/box64$|assets/payload/x3pin.exe|assets/payload/amstream.dll|assets/payload/winegstreamer.dll|assets/runner/x3_runner.py|assets/controls/overlay-data.json"
       - name: Describe the build
         run: |
           apk=app/build/outputs/apk/debug/app-debug.apk

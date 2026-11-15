@@ -63,7 +63,18 @@ def wine_debug(verbose=False, sound=False):
     normal = '-all,+timestamp,+pid,err+all,trace+loaddll,trace+fps,' + MEDIA_DEBUG
     return (normal + ',warn+dsound,warn+wave,warn+mmdevapi'
             + (',warn+all,fixme+all,trace+module' if verbose else '')
-            + (',trace+dsound,trace+dsound3d,trace+mmdevapi,trace+msacm,trace+quartz' if sound else ''))
+            + (',trace+msacm,trace+quartz,trace+strmbase' if sound else ''))
+
+
+# Sound diagnostics: per-sample and reference-counting quartz traces carry nothing about why a
+# file plays or not, and at 30 frames a second they fill a log segment in seconds.
+SOUND_NOISE = re.compile(
+    rb':trace:(?:quartz|strmbase):(?:\w*_(?:AddRef|Release)\b|StdMediaSample2_|BaseMemAllocator_|wg_sample_'
+    rb'|quartz_sample_destroy|enum_(?:pins|media_types)_|pin_Query|pin_ConnectedTo|FM2_ReadFilterData'
+    rb'|SystemClockImpl_GetTime|wg_transform_(?:read|push)_|wg_parser_(?:get_next_read_offset|push_data'
+    rb'|stream_get_buffer|stream_copy_buffer|stream_release_buffer)|FileAsyncReader_|sync_read|filter_EnumPins'
+    rb'|filter_inner_QueryInterface|Inner_QueryInterface|DllGetClassObject|DSCF_CreateInstance'
+    rb'|filter_mapper_create|AMFilterData_|FilterMapper3_EnumMatchingFilters Considering)')
 
 
 def archive_log(path, limit=WINE_LOG_LIMIT):
@@ -212,8 +223,9 @@ def fatal_launch_error(log, game=False):
 
 class WineLog:
     """Drain Wine's output on a thread; parse before rotating so early evidence survives."""
-    def __init__(self, path, limit=WINE_LOG_LIMIT, game=False):
-        self.path, self.limit, self.game = path, limit, game
+    def __init__(self, path, limit=WINE_LOG_LIMIT, game=False, drop=None):
+        self.path, self.limit, self.game, self.drop = path, limit, game, drop
+        self.unwritten = b''
         self.lock = threading.Lock()
         self.fields = {'wine_log_bytes': 0, 'wine_log_rotations': 0, 'dsound_errors': 0}
         self.error = None
@@ -263,12 +275,24 @@ class WineLog:
     def snapshot(self):
         with self.lock: return dict(self.fields), self.error
 
+    def kept(self, chunk, final=False):
+        """What of chunk goes to the file: everything, or whole lines not matching self.drop."""
+        if not self.drop: return chunk
+        data = self.unwritten + chunk
+        end = len(data) if final else data.rfind(b'\n') + 1
+        self.unwritten = data[end:][-128*1024:]
+        lines = data[:end].splitlines(keepends=True)
+        kept = [line for line in lines if not self.drop.search(line)]
+        with self.lock: self.fields['wine_log_dropped_lines'] = self.fields.get('wine_log_dropped_lines', 0) + len(lines) - len(kept)
+        return b''.join(kept)
+
     def pump(self, stream):
         output = None
         try:
             output = self.path.open('wb'); written = 0
             while chunk := stream.read1(min(64*1024, self.limit)):
                 self.observe(chunk)
+                chunk = self.kept(chunk)
                 if written + len(chunk) > self.limit:
                     output.close()
                     with self.lock: first = self.fields['wine_log_rotations'] == 0
@@ -280,6 +304,7 @@ class WineLog:
             if self.pending:
                 self.observe(b'\n')
                 with self.lock: self.fields['wine_log_bytes'] -= 1
+            if self.unwritten: output.write(self.kept(b'', final=True))
         except OSError as error:
             with self.lock: self.error = 'Could not capture Wine output: ' + str(error)
         finally:
@@ -289,6 +314,25 @@ class WineLog:
 
 class StopRequested(Exception):
     pass
+
+
+# The GStreamer splitter's entry under the DirectShow filter category, in the 32-bit registry view.
+GSTREAMER_SPLITTER_KEY = (r'wow6432node\\clsid\\{083863f1-70de-11d0-bd40-00a0c911ce86}'
+                          r'\\instance\\{f9d8d64e-a144-47dc-8ee0-f53498372c29}')
+
+
+def gstreamer_filters_registered(prefix=PREFIX):
+    """Whether winegstreamer's DllRegisterServer() has run for 32-bit programs in this prefix.
+
+    Eighth Thor run (0.1.8): the prefix was made before the media add-on existed, with winegstreamer
+    disabled. wineboot still wrote its COM classes and its catch-all media type (they come from
+    resources), but not its filter entries, which DllRegisterServer() writes through the filter
+    mapper. So DirectShow knew no GStreamer splitter: ASF speech and the 48 kHz menu track could
+    not be rendered, while MPEG files still played through the MPEG-1 splitter.
+    """
+    try: text = (prefix / 'system.reg').read_text(errors='replace').lower()
+    except OSError: return False
+    return GSTREAMER_SPLITTER_KEY in text
 
 
 def prefix_diagnostics(prefix=PREFIX, wine=Path('/opt/wine')):
@@ -560,7 +604,8 @@ class Supervisor:
     def spawn(self, args, log, env=None, cwd=None):
         cwd = cwd or GAME
         if log == 'x3-wine.log':
-            self.wine_log = WineLog(LOGS / log, game=self.request.get('mode') == 'game')
+            self.wine_log = WineLog(LOGS / log, game=self.request.get('mode') == 'game',
+                                    drop=SOUND_NOISE if self.request.get('sound_diagnostics') else None)
             process = subprocess.Popen(args, env=env or self.env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                        stderr=subprocess.STDOUT, start_new_session=True, cwd=cwd)
             self.log_thread = threading.Thread(target=self.wine_log.pump, args=(process.stdout,), daemon=True)
@@ -607,8 +652,24 @@ class Supervisor:
             raise RuntimeError('The Wine prefix is incomplete. Use "Reset Wine prefix" in the launcher; your game files and saves are kept separately.')
         with self.timed('wine32_check'):
             self.run([BOX64, WINE, r'C:\windows\syswow64\cmd.exe', '/d', '/c', 'exit', '0'], timeout=60, label='32-bit Wine check')
+        self.register_media_filters()
         temporary = marker.with_suffix('.new')
         temporary.write_text(json.dumps(signature)); os.replace(temporary, marker)
+
+    def register_media_filters(self):
+        """With the media add-on in place, make sure the prefix has winegstreamer's DirectShow filters."""
+        if media_addon() is None:
+            self.update(gstreamer_filters='no media add-on'); return
+        if gstreamer_filters_registered():
+            self.update(gstreamer_filters='registered'); return
+        try:
+            with self.timed('gstreamer_filters'):
+                for regsvr32 in (r'C:\windows\syswow64\regsvr32.exe', 'regsvr32'):
+                    self.run([BOX64, WINE, regsvr32, '/s', 'winegstreamer.dll'], timeout=180, label='Registering GStreamer filters')
+            self.update(gstreamer_filters='registered now')
+        except RuntimeError as error:
+            # Sound effects and MPEG media still work without it; carry on and say so.
+            self.update(gstreamer_filters='registration failed', warning=str(error))
 
     def check_graphics(self):
         self.update('checking_graphics')

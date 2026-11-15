@@ -364,6 +364,41 @@ class LoadTimeTests(unittest.TestCase):
         self.assertEqual(match.groups(), ("3", "3", "program idle"))
         self.assertTrue(x3_runner.X3PIN_LOG.name == "x3pin.log")
 
+class MediaRunEightTests(unittest.TestCase):
+    """Eighth Thor run (0.1.8): no speech, no menu music, comms faces from other pilots."""
+
+    def test_gstreamer_filters_detected_in_32_bit_view(self):
+        prefix = Path(tempfile.mkdtemp())
+        key = ("[Software\\\\Classes\\\\{view}CLSID\\\\{{083863F1-70DE-11D0-BD40-00A0C911CE86}}"
+               "\\\\Instance\\\\{{F9D8D64E-A144-47DC-8EE0-F53498372C29}}] 1794763463\n")
+        self.assertFalse(x3_runner.gstreamer_filters_registered(prefix))          # no registry yet
+        (prefix / "system.reg").write_text("WINE REGISTRY Version 2\n" + key.format(view=""))
+        self.assertFalse(x3_runner.gstreamer_filters_registered(prefix))          # 64-bit view only
+        (prefix / "system.reg").write_text("WINE REGISTRY Version 2\n" + key.format(view="Wow6432Node\\\\"))
+        self.assertTrue(x3_runner.gstreamer_filters_registered(prefix))
+
+    def test_sound_diagnostics_trace_directshow_not_dsound(self):
+        debug = x3_runner.wine_debug(sound=True)
+        self.assertIn("trace+quartz", debug)
+        self.assertNotIn("trace+dsound", debug)
+        self.assertNotIn("trace+dsound3d", debug)
+
+    def test_noise_is_dropped_whole_lines_only(self):
+        log = x3_runner.WineLog(Path(tempfile.mkdtemp()) / "x3-wine.log", drop=x3_runner.SOUND_NOISE)
+        first = (b"38485.944:0140:0144:trace:quartz:multimedia_stream_OpenFile (1C95EEB8/1C95EEB8)->(L\"mov\\\\00001.dat\",0)\n"
+                 b"38485.945:0140:0144:trace:quartz:StdMediaSample2_AddRef (002C4AB8) ref=2\n"
+                 b"38485.946:0140:0144:trace:quartz:filter_inner_Release filter 0B1E0028 L\"0001\", refcount 3.\n"
+                 b"38485.977:0140:0144:trace:quartz:wg_parser_stream_seek stream 0x75, start_pos 0")
+        kept = log.kept(first) + log.kept(b", stop_pos 30845009250\n") + log.kept(b"", final=True)
+        self.assertIn(b"multimedia_stream_OpenFile", kept)
+        self.assertIn(b"wg_parser_stream_seek stream 0x75, start_pos 0, stop_pos 30845009250\n", kept)
+        self.assertNotIn(b"AddRef", kept)
+        self.assertNotIn(b"filter_inner_Release", kept)
+        self.assertEqual(log.fields["wine_log_dropped_lines"], 2)
+        plain = x3_runner.WineLog(Path(tempfile.mkdtemp()) / "x3-wine.log")
+        self.assertEqual(plain.kept(first), first)
+
+
 class SavesTests(unittest.TestCase):
     """X3's Documents\\Egosoft must end up in /saves, whatever Wine did with Documents."""
 
