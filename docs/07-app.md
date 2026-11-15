@@ -150,9 +150,16 @@ filters (`winegstreamer.dll`). `patches/wine/` holds fixes for both, found on th
 - **0002, amstream:** when both formats are 16, 24 or 32-bit RGB of the same size, accept the
   change instead and convert each frame's pixels while copying it into X3's surface.
 - **0003, amstream:** X3 sets its mixer format on the audio stream before opening a file, and
-  then the stream accepts nothing else. But it offered a fixed 11025 Hz mono type with no subtype
-  to filters upstream. Now it offers the format X3 set, so the GStreamer splitter can resample
-  the 48 kHz menu track and the speech into it.
+  then the stream accepted nothing else. But it offered upstream filters a fixed 11025 Hz mono
+  type with no subtype. Now it offers the format X3 set, then the same in mono (or stereo). It
+  also accepts any 16-bit mono or stereo PCM and converts it on the way in: it remixes, and
+  resamples linearly. That covers the 48 kHz menu track and the speech.
+- **0005, winegstreamer:** the GStreamer splitter's audio output can change sample format but
+  cannot resample. It also can't remix mono that has no channel position, which is how
+  GStreamer's WMA decoder reports X3's speech. It still accepted any audio format, so the speech
+  connected at X3's rate and channel count and then never played (the stream failed to
+  negotiate). Now it refuses formats it cannot produce, and amstream gets the native format and
+  converts it (0003).
 - **0004, winegstreamer:** X3 keeps all comms faces in one MPEG-1 movie and seeks between pilots.
   Wine's DirectShow decoders ignored flushes, so after a seek two things went wrong:
   - GStreamer kept the old position's queued frames and reference pictures.
@@ -172,18 +179,21 @@ the runtime's exact Wine build (Kron4ek 10.0 WoW64) with GStreamer, stock DLLs a
 - Wine's amstream conformance suite. The patched DLL must pass a test the stock one fails, and
   must not fail one it passes.
 - Wine's suites for the MPEG decoders and splitter (`quartz_test.exe mpegvideo`, `mpegsplit`,
-  `mpegaudio`, `mpeglayer3`). No new failures allowed.
+  `mpegaudio`, `mpeglayer3`). No new failures allowed. 0004 makes one `mpegaudio` todo pass
+  (timestamps after a flush), so the patch removes that todo.
 - `tests/wine/x3media.c`, which plays media through amstream the way X3 does, in a prefix set up
   like the device's (made with winegstreamer disabled, then registered as the runner does it):
   - a 44.1 kHz MP3 (sector music);
   - a 48 kHz MP3 into a 44.1 kHz stream (the menu track);
   - WMA 2 in ASF (speech);
+  - unpositioned mono at 22 kHz into a 44.1 kHz stereo stream (what GStreamer's WMA decoder
+    makes of speech; a WAV file, so it runs without the ASF plugin too);
   - seeking back and forth in one MPEG-1 movie of solid-colour clips (the comms faces). The test
     first plays the movie to learn where each clip starts. After each seek, every frame must
     show that clip or the one before it, and no update may stall. Stock Wine shows frames from
     unrelated clips and then stalls.
 
-  All four must pass with the patched DLLs.
+  All five must pass with the patched DLLs.
 
 The app binds both DLLs over the runtime's copies, and the runner checks their hashes
 (`wine_patches` in `x3-state.json`).

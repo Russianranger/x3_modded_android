@@ -1,0 +1,47 @@
+From: X3 Modded <noreply@github.com>
+Subject: [PATCH] winegstreamer: Do not let the GStreamer splitter accept audio formats it cannot produce.
+
+The splitter's audio chain in wg_parser is a single audioconvert: it cannot resample, and it cannot
+remix channels that have no positions (libav's WMA decoder reports mono that way). Its source pin
+still accepted any audio format, so a downstream filter that offered another rate connected, and
+the stream then failed to negotiate and stalled. Refuse other rates, and other channel counts for
+mono and unpositioned audio; the downstream filter then gets the native format.
+---
+diff --git a/dlls/winegstreamer/quartz_parser.c b/dlls/winegstreamer/quartz_parser.c
+index 19b104d..a0c99a8 100644
+--- a/dlls/winegstreamer/quartz_parser.c
++++ b/dlls/winegstreamer/quartz_parser.c
+@@ -1638,10 +1638,31 @@ static BOOL decodebin_parser_filter_init_gst(struct parser *filter)
+ 
+ static HRESULT decodebin_parser_source_query_accept(struct parser_source *pin, const AM_MEDIA_TYPE *mt)
+ {
+-    struct wg_format format;
++    struct wg_format format, native;
+ 
+     /* At least make sure we can convert it to wg_format. */
+-    return amt_to_wg_format(mt, &format) ? S_OK : S_FALSE;
++    if (!amt_to_wg_format(mt, &format))
++        return S_FALSE;
++
++    /* The parser's audio chain is just audioconvert: it cannot resample, so another rate never
++     * negotiates (the stream then stalls). Nor can audioconvert remix channels without positions
++     * (libav's WMA decoder reports mono that way), and Wine's format conversion cannot tell such
++     * mono apart, so keep mono's channel count too. A downstream filter that offered such a format
++     * then gets the native one and converts itself. X3: Albion Prelude's speech is mono WMA, and
++     * amstream converts it to the format X3 set. */
++    if (format.major_type == WG_MAJOR_TYPE_AUDIO)
++    {
++        wg_parser_stream_get_current_format(pin->wg_stream, &native);
++        if (native.major_type == WG_MAJOR_TYPE_AUDIO && (native.u.audio.rate != format.u.audio.rate
++                || (native.u.audio.channels != format.u.audio.channels
++                    && (!native.u.audio.channel_mask || native.u.audio.channels == 1))))
++        {
++            TRACE("Rejecting %u Hz x%u; the stream is %u Hz x%u (mask %#x).\n", format.u.audio.rate,
++                    format.u.audio.channels, native.u.audio.rate, native.u.audio.channels, native.u.audio.channel_mask);
++            return S_FALSE;
++        }
++    }
++    return S_OK;
+ }
+ 
+ static HRESULT decodebin_parser_source_get_media_type(struct parser_source *pin,

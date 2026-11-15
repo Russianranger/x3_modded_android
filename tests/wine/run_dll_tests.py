@@ -30,6 +30,7 @@ SCENARIOS = [
     ("sector music (44.1 kHz MP3)", ["audio", "music-44k.mp3", "44100", "2"], "pass"),
     ("menu music (48 kHz MP3 into a 44.1 kHz stream)", ["audio", "music-48k.mp3", "44100", "2"], "fail"),
     ("speech (WMA 2 in ASF)", ["audio", "speech-wma2.dat", "44100", "2"], "fail"),
+    ("unpositioned mono at 22 kHz into a 44.1 kHz stereo stream", ["audio", "speech-22k-mono-unpositioned.wav", "44100", "2"], "fail"),
     ("comms faces (seeking in one MPEG-1 movie)", ["seek", "faces-clips.mpg", "8"], "fail"),
 ]
 

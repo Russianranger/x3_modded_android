@@ -12,6 +12,9 @@ wg_transform_flush() drains rather than flushes the GStreamer pipeline, so the d
 deadline from before the seek and dropped every frame up to it. For video, also skip input until
 the next sync point (if the source marks them at all) and drop decoded frames that end before the
 new segment starts.
+
+The MPEG audio decoder's first sample after a flush now starts at 0, as on Windows, so the
+conformance test's todo for it goes.
 ---
 diff --git a/dlls/winegstreamer/quartz_transform.c b/dlls/winegstreamer/quartz_transform.c
 index ff57ea0..c6a281a 100644
@@ -135,3 +138,15 @@ index ff57ea0..c6a281a 100644
  };
  
  static HRESULT transform_source_query_accept(struct strmbase_pin *pin, const AM_MEDIA_TYPE *mt)
+diff --git a/dlls/quartz/tests/mpegaudio.c b/dlls/quartz/tests/mpegaudio.c
+index 9fa6796..0d18457 100644
+--- a/dlls/quartz/tests/mpegaudio.c
++++ b/dlls/quartz/tests/mpegaudio.c
+@@ -1513,7 +1513,6 @@ static void test_streaming_events(IMediaControl *control, IPin *sink,
+ 
+     testsink->expected_start_time = 0;
+     testsink->expected_stop_time = 120000;
+-    testsink->todo_time = TRUE;
+     hr = IMemInputPin_Receive(input, sample);
+     ok(hr == S_OK, "Got hr %#lx.\n", hr);
+     hr = IMemInputPin_Receive(input, sample);

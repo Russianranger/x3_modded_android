@@ -1,17 +1,151 @@
 From: X3 Modded <noreply@github.com>
-Subject: [PATCH] amstream: Offer the application's audio format to upstream filters.
+Subject: [PATCH] amstream: Offer the application's audio format to upstream filters, and convert.
 
-Once the application has set a format on an audio stream, ReceiveConnection() accepts nothing
-else, but the pin still enumerated a fixed 11025 Hz mono type with no subtype. A converting
-upstream filter (the GStreamer splitter resamples and remixes) then had nothing usable to connect
-with. Enumerate exactly the set format as PCM instead. X3: Albion Prelude sets its mixer format,
-and its 48 kHz menu music and its speech come at other rates; without this neither renders.
+Once the application has set a format on an audio stream, ReceiveConnection() accepted nothing
+else, while the pin enumerated a fixed 11025 Hz mono type with no subtype. A converting upstream
+filter then had nothing usable to connect with, and one that cannot convert had no way in at all.
+
+Enumerate the set format as PCM, then the same with the other of mono and stereo. Accept any
+16-bit mono or stereo PCM besides, and convert it on the way in: remix, and resample linearly.
+X3: Albion Prelude sets its mixer format before OpenFile(); its menu music is 48 kHz and its
+speech is mono WMA, which Wine's GStreamer splitter can neither resample nor remix.
 ---
 diff --git a/dlls/amstream/audiostream.c b/dlls/amstream/audiostream.c
-index d76156c..3cd60dd 100644
+index d76156c..d8609ec 100644
 --- a/dlls/amstream/audiostream.c
 +++ b/dlls/amstream/audiostream.c
-@@ -790,6 +790,7 @@ struct enum_media_types
+@@ -34,6 +34,7 @@ struct queued_receive
+     IMediaSample *sample;
+     DWORD length;
+     BYTE *pointer;
++    BYTE *remixed;      /* owned copy converted to the application's format, or NULL */
+     DWORD position;
+     STREAM_TIME start_time;
+ };
+@@ -62,6 +63,10 @@ struct audio_stream
+     BOOL flushing;
+     struct list receive_queue;
+     struct list update_queue;
++
++    /* Converting from the connection's format to the one the application set. */
++    ULONGLONG convert_position;
++    short convert_last[2];
+ };
+ 
+ struct audio_sample
+@@ -85,9 +90,101 @@ static void remove_queued_receive(struct queued_receive *receive)
+ {
+     list_remove(&receive->entry);
+     IMediaSample_Release(receive->sample);
++    free(receive->remixed);
+     free(receive);
+ }
+ 
++/* 16-bit PCM, mono or stereo, at any rate: what ReceiveConnection() accepts besides an exact match
++ * once the application has set such a format, and converts. */
++static BOOL can_convert(const WAVEFORMATEX *connected, const WAVEFORMATEX *wanted)
++{
++    return wanted->wFormatTag == WAVE_FORMAT_PCM && connected->wFormatTag == WAVE_FORMAT_PCM
++            && connected->wBitsPerSample == 16 && wanted->wBitsPerSample == 16
++            && (connected->nChannels == 1 || connected->nChannels == 2)
++            && (wanted->nChannels == 1 || wanted->nChannels == 2)
++            && connected->nBlockAlign == connected->nChannels * 2 && wanted->nBlockAlign == wanted->nChannels * 2
++            && connected->nSamplesPerSec && wanted->nSamplesPerSec;
++}
++
++static BOOL needs_conversion(const struct audio_stream *stream)
++{
++    const WAVEFORMATEX *connected = (const WAVEFORMATEX *)stream->mt.pbFormat;
++
++    return stream->format.wFormatTag && memcmp(connected, &stream->format, sizeof(WAVEFORMATEX))
++            && can_convert(connected, &stream->format);
++}
++
++static void reset_conversion(struct audio_stream *stream)
++{
++    stream->convert_position = (ULONGLONG)1 << 32;   /* at the first frame of the next buffer */
++    stream->convert_last[0] = stream->convert_last[1] = 0;
++}
++
++/* Remix and resample (linearly) one buffer into the application's format. The position runs over
++ * the previous buffer's last frame (index 0) followed by this buffer's frames. */
++static BYTE *convert(struct audio_stream *stream, const BYTE *data, DWORD *length)
++{
++    const WAVEFORMATEX *from = (const WAVEFORMATEX *)stream->mt.pbFormat, *to = &stream->format;
++    ULONGLONG step = ((ULONGLONG)from->nSamplesPerSec << 32) / to->nSamplesPerSec;
++    DWORD frames = *length / from->nBlockAlign, written = 0, capacity;
++    const short *in = (const short *)data;
++    short *out;
++
++    capacity = (DWORD)(((ULONGLONG)(frames + 1) * to->nSamplesPerSec) / from->nSamplesPerSec) + 2;
++    if (!(out = malloc(capacity * to->nBlockAlign)))
++        return NULL;
++
++    while (frames && (stream->convert_position >> 32) + 1 <= frames && written < capacity)
++    {
++        DWORD index = stream->convert_position >> 32;
++        LONGLONG fraction = stream->convert_position & 0xffffffff;
++        unsigned int c;
++
++        for (c = 0; c < to->nChannels; ++c)
++        {
++            int a, b;
++
++            /* Channel c of frames index - 1 and index of this buffer, in the target layout. */
++            if (from->nChannels == to->nChannels)
++            {
++                a = index ? in[(index - 1) * from->nChannels + c] : stream->convert_last[c];
++                b = in[index * from->nChannels + c];
++            }
++            else if (from->nChannels == 1)
++            {
++                a = index ? in[index - 1] : stream->convert_last[0];
++                b = in[index];
++            }
++            else
++            {
++                a = index ? (in[(index - 1) * 2] + in[(index - 1) * 2 + 1]) / 2 : stream->convert_last[0];
++                b = (in[index * 2] + in[index * 2 + 1]) / 2;
++            }
++            out[written * to->nChannels + c] = a + (((b - a) * fraction) >> 32);
++        }
++        ++written;
++        stream->convert_position += step;
++    }
++
++    if (frames)
++    {
++        unsigned int c;
++
++        stream->convert_position -= (ULONGLONG)frames << 32;
++        for (c = 0; c < to->nChannels; ++c)
++        {
++            if (from->nChannels == to->nChannels)
++                stream->convert_last[c] = in[(frames - 1) * from->nChannels + c];
++            else if (from->nChannels == 1)
++                stream->convert_last[c] = in[frames - 1];
++            else
++                stream->convert_last[c] = (in[(frames - 1) * 2] + in[(frames - 1) * 2 + 1]) / 2;
++        }
++    }
++    *length = written * to->nBlockAlign;
++    return (BYTE *)out;
++}
++
+ static void remove_queued_update(struct audio_sample *sample)
+ {
+     HRESULT hr;
+@@ -110,7 +207,8 @@ static void flush_receive_queue(struct audio_stream *stream)
+ 
+ static STREAM_TIME stream_time_from_position(struct audio_stream *stream, struct queued_receive *receive)
+ {
+-    const WAVEFORMATEX *format = (WAVEFORMATEX *)stream->mt.pbFormat;
++    /* Positions count bytes as delivered to the application, after any remix. */
++    const WAVEFORMATEX *format = stream->format.wFormatTag ? &stream->format : (WAVEFORMATEX *)stream->mt.pbFormat;
+     return receive->start_time + (receive->position * 10000000 + format->nAvgBytesPerSec / 2) / format->nAvgBytesPerSec;
+ }
+ 
+@@ -790,6 +888,7 @@ struct enum_media_types
      IEnumMediaTypes IEnumMediaTypes_iface;
      LONG refcount;
      unsigned int index;
@@ -19,7 +153,7 @@ index d76156c..3cd60dd 100644
  };
  
  static const IEnumMediaTypesVtbl enum_media_types_vtbl;
-@@ -829,7 +830,10 @@ static ULONG WINAPI enum_media_types_Release(IEnumMediaTypes *iface)
+@@ -829,7 +928,10 @@ static ULONG WINAPI enum_media_types_Release(IEnumMediaTypes *iface)
      ULONG refcount = InterlockedDecrement(&enum_media_types->refcount);
      TRACE("%p decreasing refcount to %lu.\n", enum_media_types, refcount);
      if (!refcount)
@@ -30,12 +164,19 @@ index d76156c..3cd60dd 100644
      return refcount;
  }
  
-@@ -855,17 +859,31 @@ static HRESULT WINAPI enum_media_types_Next(IEnumMediaTypes *iface, ULONG count,
+@@ -853,19 +955,46 @@ static HRESULT WINAPI enum_media_types_Next(IEnumMediaTypes *iface, ULONG count,
+     if (!ret_count)
+         return E_POINTER;
  
-     if (count && !enum_media_types->index)
+-    if (count && !enum_media_types->index)
++    if (count && (!enum_media_types->index || (enum_media_types->index == 1
++            && enum_media_types->stream->format.wFormatTag == WAVE_FORMAT_PCM
++            && enum_media_types->stream->format.wBitsPerSample == 16
++            && (enum_media_types->stream->format.nChannels == 1 || enum_media_types->stream->format.nChannels == 2))))
      {
 +        struct audio_stream *stream = enum_media_types->stream;
 +        const WAVEFORMATEX *format = &wfx;
++        WAVEFORMATEX other;
 +
          mts[0] = CoTaskMemAlloc(sizeof(AM_MEDIA_TYPE));
          memset(mts[0], 0, sizeof(AM_MEDIA_TYPE));
@@ -50,6 +191,15 @@ index d76156c..3cd60dd 100644
 +        {
 +            format = &stream->format;
 +            mts[0]->subtype = MEDIASUBTYPE_PCM;
++            if (enum_media_types->index == 1)
++            {
++                /* Then the other of mono and stereo, which ReceiveConnection() remixes. */
++                other = stream->format;
++                other.nChannels = 3 - other.nChannels;
++                other.nBlockAlign = other.nChannels * 2;
++                other.nAvgBytesPerSec = other.nSamplesPerSec * other.nBlockAlign;
++                format = &other;
++            }
 +        }
          mts[0]->bFixedSizeSamples = TRUE;
          mts[0]->bTemporalCompression = FALSE;
@@ -64,7 +214,7 @@ index d76156c..3cd60dd 100644
  
          ++enum_media_types->index;
          *ret_count = 1;
-@@ -909,6 +927,8 @@ static HRESULT WINAPI enum_media_types_Clone(IEnumMediaTypes *iface, IEnumMediaT
+@@ -909,6 +1038,8 @@ static HRESULT WINAPI enum_media_types_Clone(IEnumMediaTypes *iface, IEnumMediaT
      object->IEnumMediaTypes_iface.lpVtbl = &enum_media_types_vtbl;
      object->refcount = 1;
      object->index = enum_media_types->index;
@@ -73,7 +223,25 @@ index d76156c..3cd60dd 100644
  
      *out = &object->IEnumMediaTypes_iface;
      return S_OK;
-@@ -1113,6 +1133,7 @@ static HRESULT WINAPI audio_sink_QueryAccept(IPin *iface, const AM_MEDIA_TYPE *m
+@@ -985,7 +1116,8 @@ static HRESULT WINAPI audio_sink_ReceiveConnection(IPin *iface, IPin *peer, cons
+         return VFW_E_INVALID_DIRECTION;
+     }
+ 
+-    if (stream->format.wFormatTag && memcmp(mt->pbFormat, &stream->format, sizeof(WAVEFORMATEX)))
++    if (stream->format.wFormatTag && memcmp(mt->pbFormat, &stream->format, sizeof(WAVEFORMATEX))
++            && !can_convert((const WAVEFORMATEX *)mt->pbFormat, &stream->format))
+     {
+         LeaveCriticalSection(&stream->cs);
+         return E_INVALIDARG;
+@@ -993,6 +1125,7 @@ static HRESULT WINAPI audio_sink_ReceiveConnection(IPin *iface, IPin *peer, cons
+ 
+     CopyMediaType(&stream->mt, mt);
+     IPin_AddRef(stream->peer = peer);
++    reset_conversion(stream);
+ 
+     LeaveCriticalSection(&stream->cs);
+ 
+@@ -1113,6 +1246,7 @@ static HRESULT WINAPI audio_sink_QueryAccept(IPin *iface, const AM_MEDIA_TYPE *m
  
  static HRESULT WINAPI audio_sink_EnumMediaTypes(IPin *iface, IEnumMediaTypes **enum_media_types)
  {
@@ -81,7 +249,7 @@ index d76156c..3cd60dd 100644
      struct enum_media_types *object;
  
      TRACE("iface %p, enum_media_types %p.\n", iface, enum_media_types);
-@@ -1126,6 +1147,8 @@ static HRESULT WINAPI audio_sink_EnumMediaTypes(IPin *iface, IEnumMediaTypes **e
+@@ -1126,6 +1260,8 @@ static HRESULT WINAPI audio_sink_EnumMediaTypes(IPin *iface, IEnumMediaTypes **e
      object->IEnumMediaTypes_iface.lpVtbl = &enum_media_types_vtbl;
      object->refcount = 1;
      object->index = 0;
@@ -90,11 +258,44 @@ index d76156c..3cd60dd 100644
  
      *enum_media_types = &object->IEnumMediaTypes_iface;
      return S_OK;
+@@ -1199,6 +1335,7 @@ static HRESULT WINAPI audio_sink_EndFlush(IPin *iface)
+     EnterCriticalSection(&stream->cs);
+ 
+     stream->flushing = FALSE;
++    reset_conversion(stream);
+ 
+     LeaveCriticalSection(&stream->cs);
+ 
+@@ -1215,6 +1352,7 @@ static HRESULT WINAPI audio_sink_NewSegment(IPin *iface, REFERENCE_TIME start, R
+     EnterCriticalSection(&stream->cs);
+ 
+     stream->segment_start = start;
++    reset_conversion(stream);
+ 
+     LeaveCriticalSection(&stream->cs);
+ 
+@@ -1349,6 +1487,16 @@ static HRESULT WINAPI audio_meminput_Receive(IMemInputPin *iface, IMediaSample *
+     receive->length = IMediaSample_GetActualDataLength(sample);
+     receive->pointer = pointer;
+     receive->sample = sample;
++    if (needs_conversion(stream))
++    {
++        if (!(receive->remixed = convert(stream, pointer, &receive->length)))
++        {
++            free(receive);
++            LeaveCriticalSection(&stream->cs);
++            return E_OUTOFMEMORY;
++        }
++        receive->pointer = receive->remixed;
++    }
+     receive->start_time = start_time + stream->segment_start;
+     IMediaSample_AddRef(receive->sample);
+     list_add_tail(&stream->receive_queue, &receive->entry);
 diff --git a/dlls/amstream/tests/amstream.c b/dlls/amstream/tests/amstream.c
-index 872031c..05a046b 100644
+index 872031c..bd6d286 100644
 --- a/dlls/amstream/tests/amstream.c
 +++ b/dlls/amstream/tests/amstream.c
-@@ -3804,6 +3804,62 @@ static void test_audiostream_set_format(void)
+@@ -3804,6 +3804,79 @@ static void test_audiostream_set_format(void)
      ok(!ref, "Got outstanding refcount %ld.\n", ref);
  }
  
@@ -144,6 +345,23 @@ index 872031c..05a046b 100644
 +        CoTaskMemFree(mt->pbFormat);
 +        CoTaskMemFree(mt);
 +    }
++    /* Then the same as mono, which the stream remixes (X3's speech is mono WMA). */
++    hr = IEnumMediaTypes_Next(enummt, 1, &mt, &count);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    if (hr == S_OK)
++    {
++        const WAVEFORMATEX *mono = (const WAVEFORMATEX *)mt->pbFormat;
++
++        ok(IsEqualGUID(&mt->subtype, &MEDIASUBTYPE_PCM), "Got subtype %s.\n", wine_dbgstr_guid(&mt->subtype));
++        ok(mono->nChannels == 1 && mono->nSamplesPerSec == 44100 && mono->nBlockAlign == 2
++                && mono->nAvgBytesPerSec == 88200 && mono->wBitsPerSample == 16,
++                "Got %u channels, %lu Hz, block %u, %lu bytes/s.\n", mono->nChannels, mono->nSamplesPerSec,
++                mono->nBlockAlign, mono->nAvgBytesPerSec);
++        CoTaskMemFree(mt->pbFormat);
++        CoTaskMemFree(mt);
++    }
++    hr = IEnumMediaTypes_Next(enummt, 1, &mt, &count);
++    ok(hr == S_FALSE, "Got hr %#lx.\n", hr);
 +    IEnumMediaTypes_Release(enummt);
 +
 +    IPin_Release(pin);
@@ -157,7 +375,7 @@ index 872031c..05a046b 100644
  static void test_audiostream_receive_connection(void)
  {
      WAVEFORMATEXTENSIBLE extensible_format;
-@@ -9959,6 +10015,7 @@ START_TEST(amstream)
+@@ -9959,6 +10032,7 @@ START_TEST(amstream)
      test_audiostream_get_format();
      test_audiostream_set_format();
      test_audiostream_receive_connection();
