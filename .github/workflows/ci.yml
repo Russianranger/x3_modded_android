@@ -66,17 +66,23 @@ jobs:
   wintools:
     # Windows helpers run inside Wine (native/): built with MinGW, tested under real Wine + Xvfb.
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      NEEDRESTART_MODE: l
     steps:
       - uses: actions/checkout@v4
       - name: Install MinGW and Wine
+        timeout-minutes: 12
         run: |
           sudo dpkg --add-architecture i386
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends gcc-mingw-w64-i686 wine wine32:i386 wine64 xvfb xauth >/dev/null
+          sudo -E apt-get update -qq
+          sudo -E apt-get install -y -q -o Dpkg::Use-Pty=0 --no-install-recommends gcc-mingw-w64-i686 wine wine32:i386 wine64 xvfb xauth
           wine --version
       - name: Build
         run: scripts/build_wintools.sh wintools-out
       - name: x3pin keeps the CryptoAPI DLLs loaded (Wine)
+        timeout-minutes: 8
         run: xvfb-run -a tests/wine/run_pin_test.sh wintools-out
       - uses: actions/upload-artifact@v4
         with:
