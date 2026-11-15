@@ -154,9 +154,16 @@ filters (`winegstreamer.dll`). `patches/wine/` holds fixes for both, found on th
   to filters upstream. Now it offers the format X3 set, so the GStreamer splitter can resample
   the 48 kHz menu track and the speech into it.
 - **0004, winegstreamer:** X3 keeps all comms faces in one MPEG-1 movie and seeks between pilots.
-  Wine's DirectShow decoders ignored flushes, so after a seek GStreamer kept the old position's
-  queued frames and reference pictures. Now the decoders flush on a seek, video waits for the next
-  key frame, and frames from before the seek target are dropped.
+  Wine's DirectShow decoders ignored flushes, so after a seek two things went wrong:
+  - GStreamer kept the old position's queued frames and reference pictures.
+  - The decoder kept its pre-seek quality-of-service deadline and dropped every frame up to it.
+
+  Now the decoders flush on a seek, reset that deadline, and (for video) wait for the next key
+  frame.
+
+  **Still open:** GStreamer's MPEG-PS demuxer lands somewhat before the target and gives Wine
+  no timestamps to drop those frames by. So up to about half a second of the previous clip can
+  show before the requested face.
 
 **Building and testing:** CI builds both DLLs (PE side only; `winegstreamer.dll` keeps using the
 runtime's own `winegstreamer.so` from the same source) from the `wine-10.0` tag. It then runs, on
@@ -171,8 +178,10 @@ the runtime's exact Wine build (Kron4ek 10.0 WoW64) with GStreamer, stock DLLs a
   - a 44.1 kHz MP3 (sector music);
   - a 48 kHz MP3 into a 44.1 kHz stream (the menu track);
   - WMA 2 in ASF (speech);
-  - seeking back and forth in one MPEG-1 movie of solid-colour clips, checking every frame's colour
-    (the comms faces).
+  - seeking back and forth in one MPEG-1 movie of solid-colour clips (the comms faces). The test
+    first plays the movie to learn where each clip starts. After each seek, every frame must
+    show that clip or the one before it, and no update may stall. Stock Wine shows frames from
+    unrelated clips and then stalls.
 
   All four must pass with the patched DLLs.
 
@@ -515,8 +524,10 @@ Sound diagnostics were on for this run.
 - **The log lost the middle of the session.** Tracing dsound and dsound3d produced three
   quarters of the output and filled each 8 MB segment in seconds.
 
-**Reproduced off the device:** built locally with clang and Wine's headers, `x3media.exe` showed
-all three problems on stock Kron4ek Wine 10.0 with the host's GStreamer:
+**Reproduced off the device:** `x3media.exe`, built locally with clang and Wine's headers, showed
+all three problems on stock Kron4ek Wine 10.0 with the host's GStreamer. The patched PE DLLs
+can be built the same way (clang, lld, Wine's headers via `widl`, Kron4ek's import libraries,
+`winebuild --builtin`), which is how 0004's quality-of-service fix was found:
 
 - `0x80040217` for the 48 kHz MP3 and for ASF;
 - after seeks, 47 of 60 frames came from the wrong clip.
