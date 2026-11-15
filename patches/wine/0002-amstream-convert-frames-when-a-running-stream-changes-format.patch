@@ -1,0 +1,348 @@
+From: X3 Modded <noreply@github.com>
+Subject: [PATCH] amstream: Convert frames when a running ddraw stream changes RGB format.
+
+X3: Albion Prelude creates its comms face samples (IDirectDrawMediaStream::CreateSample with its
+own surface, which sets the stream format to the surface's) after the graph is running. The
+upstream pin cannot reconnect while running, so with patch 0001 the call fails cleanly. Accept the
+change instead when both the connection and the requested format are 16, 24 or 32-bit RGB of the
+same size: keep the connection and convert each frame's pixels while copying it into the sample.
+Copies are also clamped to the connected frame size.
+---
+diff --git a/dlls/amstream/ddrawstream.c b/dlls/amstream/ddrawstream.c
+index b9e2692..c7cb52c 100644
+--- a/dlls/amstream/ddrawstream.c
++++ b/dlls/amstream/ddrawstream.c
+@@ -107,12 +107,110 @@ static void flush_update_queue(struct ddraw_stream *stream, HRESULT update_hr)
+     }
+ }
+ 
++/* An RGB pixel layout: bits per pixel, and position and range of each channel. */
++struct rgb_layout
++{
++    DWORD bpp;
++    DWORD mask[3], shift[3], max[3];
++    DWORD alpha;
++};
++
++static BOOL rgb_layout_init(struct rgb_layout *layout, DWORD bpp, DWORD r, DWORD g, DWORD b, DWORD alpha)
++{
++    const DWORD masks[3] = {r, g, b};
++    unsigned int i;
++
++    if (bpp != 16 && bpp != 24 && bpp != 32)
++        return FALSE;
++    layout->bpp = bpp;
++    layout->alpha = alpha;
++    for (i = 0; i < 3; ++i)
++    {
++        DWORD mask = masks[i], shift = 0;
++
++        if (!mask)
++            return FALSE;
++        while (!(mask & 1))
++        {
++            mask >>= 1;
++            ++shift;
++        }
++        layout->mask[i] = masks[i];
++        layout->shift[i] = shift;
++        layout->max[i] = mask;
++    }
++    return TRUE;
++}
++
++static BOOL rgb_layout_from_pf(struct rgb_layout *layout, const DDPIXELFORMAT *pf)
++{
++    if ((pf->dwFlags & (DDPF_FOURCC | DDPF_YUV | DDPF_PALETTEINDEXED1 | DDPF_PALETTEINDEXED2
++            | DDPF_PALETTEINDEXED4 | DDPF_PALETTEINDEXEDTO8 | DDPF_PALETTEINDEXED8)) || !(pf->dwFlags & DDPF_RGB))
++        return FALSE;
++    return rgb_layout_init(layout, pf->dwRGBBitCount, pf->dwRBitMask, pf->dwGBitMask, pf->dwBBitMask,
++            (pf->dwFlags & DDPF_ALPHAPIXELS) ? pf->dwRGBAlphaBitMask : 0);
++}
++
++static BOOL rgb_layout_from_mt(struct rgb_layout *layout, const AM_MEDIA_TYPE *mt)
++{
++    if (!mt->pbFormat || mt->cbFormat < sizeof(VIDEOINFOHEADER))
++        return FALSE;
++    if (IsEqualGUID(&mt->subtype, &MEDIASUBTYPE_RGB555))
++        return rgb_layout_init(layout, 16, 0x7c00, 0x03e0, 0x001f, 0);
++    if (IsEqualGUID(&mt->subtype, &MEDIASUBTYPE_RGB565))
++        return rgb_layout_init(layout, 16, 0xf800, 0x07e0, 0x001f, 0);
++    if (IsEqualGUID(&mt->subtype, &MEDIASUBTYPE_RGB24))
++        return rgb_layout_init(layout, 24, 0xff0000, 0x00ff00, 0x0000ff, 0);
++    if (IsEqualGUID(&mt->subtype, &MEDIASUBTYPE_RGB32))
++        return rgb_layout_init(layout, 32, 0xff0000, 0x00ff00, 0x0000ff, 0);
++    return FALSE;
++}
++
++static BOOL rgb_layouts_equal(const struct rgb_layout *a, const struct rgb_layout *b)
++{
++    return a->bpp == b->bpp && a->mask[0] == b->mask[0] && a->mask[1] == b->mask[1] && a->mask[2] == b->mask[2];
++}
++
++static void convert_row(BYTE *dst, const struct rgb_layout *dst_layout,
++        const BYTE *src, const struct rgb_layout *src_layout, DWORD width)
++{
++    DWORD x, pixel, out;
++    unsigned int i;
++
++    for (x = 0; x < width; ++x, src += src_layout->bpp / 8, dst += dst_layout->bpp / 8)
++    {
++        if (src_layout->bpp == 16) pixel = *(const WORD *)src;
++        else if (src_layout->bpp == 24) pixel = src[0] | (src[1] << 8) | (src[2] << 16);
++        else pixel = *(const DWORD *)src;
++
++        out = dst_layout->alpha;
++        for (i = 0; i < 3; ++i)
++        {
++            DWORD value = (pixel & src_layout->mask[i]) >> src_layout->shift[i];
++            value = (value * dst_layout->max[i] + src_layout->max[i] / 2) / src_layout->max[i];
++            out |= value << dst_layout->shift[i];
++        }
++
++        if (dst_layout->bpp == 16) *(WORD *)dst = out;
++        else if (dst_layout->bpp == 24)
++        {
++            dst[0] = out;
++            dst[1] = out >> 8;
++            dst[2] = out >> 16;
++        }
++        else *(DWORD *)dst = out;
++    }
++}
++
+ static HRESULT process_update(struct ddraw_sample *sample, int stride, BYTE *pointer,
+-        STREAM_TIME start_time, STREAM_TIME end_time)
++        const AM_MEDIA_TYPE *mt, STREAM_TIME start_time, STREAM_TIME end_time)
+ {
++    struct rgb_layout src_layout, dst_layout;
++    DWORD width, rows, row_size, src_row_size;
++    const BITMAPINFOHEADER *header;
+     DDSURFACEDESC desc;
+-    DWORD row_size;
+     const BYTE *src_row;
++    BOOL convert;
+     BYTE *dst_row;
+     DWORD row;
+     HRESULT hr;
+@@ -122,12 +220,22 @@ static HRESULT process_update(struct ddraw_sample *sample, int stride, BYTE *poi
+     if (FAILED(hr))
+         return hr;
+ 
+-    row_size = (sample->rect.right - sample->rect.left) * desc.ddpfPixelFormat.dwRGBBitCount / 8;
++    header = &((VIDEOINFOHEADER *)mt->pbFormat)->bmiHeader;
++    width = min(sample->rect.right - sample->rect.left, header->biWidth);
++    rows = min(sample->rect.bottom - sample->rect.top, abs(header->biHeight));
++    row_size = width * desc.ddpfPixelFormat.dwRGBBitCount / 8;
++    src_row_size = width * header->biBitCount / 8;
++    /* The stream accepts an RGB format change while running (see SetFormat) by converting. */
++    convert = rgb_layout_from_mt(&src_layout, mt) && rgb_layout_from_pf(&dst_layout, &desc.ddpfPixelFormat)
++            && !rgb_layouts_equal(&src_layout, &dst_layout);
+     src_row = pointer;
+     dst_row = desc.lpSurface;
+-    for (row = sample->rect.top; row < sample->rect.bottom; ++row)
++    for (row = 0; row < rows; ++row)
+     {
+-        memcpy(dst_row, src_row, row_size);
++        if (convert)
++            convert_row(dst_row, &dst_layout, src_row, &src_layout, width);
++        else
++            memcpy(dst_row, src_row, min(row_size, src_row_size));
+         src_row += stride;
+         dst_row += desc.lPitch;
+     }
+@@ -637,6 +745,22 @@ static HRESULT WINAPI ddraw_IDirectDrawMediaStream_SetFormat(IDirectDrawMediaStr
+          * Prelude creates its comm video samples while the graph runs). */
+         if (FAILED(hr = IFilterGraph_Disconnect(stream->graph, stream->peer)))
+         {
++            struct rgb_layout connection, requested;
++
++            /* Same size, RGB on both sides: keep the connection and convert each frame instead. */
++            if (rgb_layout_from_mt(&connection, &stream->mt)
++                    && (!(stream->format.flags & DDSD_PIXELFORMAT) || rgb_layout_from_pf(&requested, &stream->format.pf))
++                    && (!(stream->format.flags & DDSD_HEIGHT)
++                        || (stream->format.width == old_format.width && stream->format.height == old_format.height)))
++            {
++                WARN("Stream %p is running; converting %u bpp frames to %lu bpp instead of reconnecting.\n",
++                        stream, ((VIDEOINFOHEADER *)stream->mt.pbFormat)->bmiHeader.biBitCount,
++                        stream->format.pf.dwRGBBitCount);
++                IPin_Release(old_peer);
++                FreeMediaType(&old_media_type);
++                LeaveCriticalSection(&stream->cs);
++                return S_OK;
++            }
+             ERR("Cannot reconnect stream %p for %lux%lu, %lu bpp (flags %#lx): upstream disconnect failed, hr %#lx.\n",
+                     stream, format->dwWidth, format->dwHeight, format->ddpfPixelFormat.dwRGBBitCount, format->dwFlags, hr);
+             stream->format = old_format;
+@@ -1432,7 +1556,7 @@ static HRESULT WINAPI ddraw_meminput_Receive(IMemInputPin *iface, IMediaSample *
+             IQualityControl *qc;
+ 
+             sample->update_hr = process_update(sample, top_down_stride, top_down_pointer,
+-                    start_stream_time, end_stream_time);
++                    &stream->mt, start_stream_time, end_stream_time);
+ 
+             if (sample->continuous_update && SUCCEEDED(sample->update_hr))
+             {
+diff --git a/dlls/amstream/tests/amstream.c b/dlls/amstream/tests/amstream.c
+index 9ebbfe5..872031c 100644
+--- a/dlls/amstream/tests/amstream.c
++++ b/dlls/amstream/tests/amstream.c
+@@ -5788,6 +5788,150 @@ static void test_ddrawstream_set_format(void)
+     ok(!ref, "Got outstanding refcount %ld.\n", ref);
+ }
+ 
++/* X3: Albion Prelude sets a 16-bit format on its comms video stream while the graph runs. The
++ * upstream filter cannot reconnect then, so the stream keeps its connection and converts. */
++static void test_ddrawstream_set_format_running(void)
++{
++    static const DWORD rgb32_data[8] =
++    {
++        0x00ff0000, 0x0000ff00, 0x000000ff, 0x00ffffff,
++        0x00000000, 0x00808080, 0x00102030, 0x00f0e0d0,
++    };
++    static const WORD rgb565_expect[8] =
++    {
++        0xf800, 0x07e0, 0x001f, 0xffff, 0x0000, 0x8410, 0x1106, 0xeef9,
++    };
++    IAMMultiMediaStream *mmstream = create_ammultimediastream();
++    IDirectDrawStreamSample *stream_sample;
++    IDirectDrawMediaStream *ddraw_stream;
++    IMemInputPin *mem_input_pin;
++    IMediaSample *media_sample;
++    IMediaFilter *media_filter;
++    DDSURFACEDESC current_format;
++    struct testfilter source;
++    IDirectDrawSurface *surface;
++    IGraphBuilder *graph;
++    IMediaStream *stream;
++    VIDEOINFO video_info;
++    AM_MEDIA_TYPE mt, current;
++    DDSURFACEDESC desc;
++    IDirectDraw *ddraw;
++    HANDLE thread;
++    IPin *pin, *peer;
++    HRESULT hr;
++    ULONG ref;
++    int i;
++
++    hr = IAMMultiMediaStream_Initialize(mmstream, STREAMTYPE_READ, 0, NULL);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    hr = IAMMultiMediaStream_AddMediaStream(mmstream, NULL, &MSPID_PrimaryVideo, 0, &stream);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    hr = IMediaStream_QueryInterface(stream, &IID_IDirectDrawMediaStream, (void **)&ddraw_stream);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    hr = IMediaStream_QueryInterface(stream, &IID_IPin, (void **)&pin);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    hr = IMediaStream_QueryInterface(stream, &IID_IMemInputPin, (void **)&mem_input_pin);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    hr = IDirectDrawMediaStream_GetDirectDraw(ddraw_stream, &ddraw);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    hr = IAMMultiMediaStream_GetFilterGraph(mmstream, &graph);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    hr = IGraphBuilder_QueryInterface(graph, &IID_IMediaFilter, (void **)&media_filter);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    hr = IMediaFilter_SetSyncSource(media_filter, NULL);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    testfilter_init(&source);
++    hr = IGraphBuilder_AddFilter(graph, &source.filter.IBaseFilter_iface, NULL);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++
++    video_info = rgb32_video_info;
++    video_info.bmiHeader.biWidth = 4;
++    video_info.bmiHeader.biHeight = -2;
++    mt = rgb32_mt;
++    mt.pbFormat = (BYTE *)&video_info;
++    hr = IGraphBuilder_ConnectDirect(graph, &source.source.pin.IPin_iface, pin, &mt);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++
++    hr = IAMMultiMediaStream_SetState(mmstream, STREAMSTATE_RUN);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++
++    hr = IDirectDrawMediaStream_SetFormat(ddraw_stream, &rgb565_format, NULL);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    peer = NULL;
++    hr = IPin_ConnectedTo(pin, &peer);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    ok(peer == &source.source.pin.IPin_iface, "Got peer %p.\n", peer);
++    if (peer) IPin_Release(peer);
++    hr = IPin_ConnectionMediaType(pin, &current);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    if (hr == S_OK)
++    {
++        ok(IsEqualGUID(&current.subtype, &MEDIASUBTYPE_RGB32), "Got subtype %s.\n", wine_dbgstr_guid(&current.subtype));
++        FreeMediaType(&current);
++    }
++    hr = IDirectDrawMediaStream_GetFormat(ddraw_stream, &current_format, NULL, NULL, NULL);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    ok(current_format.ddpfPixelFormat.u1.dwRGBBitCount == 16,
++            "Got rgb bit count %lu.\n", current_format.ddpfPixelFormat.u1.dwRGBBitCount);
++
++    desc = rgb565_format;
++    desc.dwFlags |= DDSD_WIDTH | DDSD_HEIGHT | DDSD_CAPS;
++    desc.dwWidth = 4;
++    desc.dwHeight = 2;
++    desc.ddsCaps.dwCaps = DDSCAPS_SYSTEMMEMORY | DDSCAPS_OFFSCREENPLAIN;
++    hr = IDirectDraw_CreateSurface(ddraw, &desc, &surface, NULL);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    hr = IDirectDrawMediaStream_CreateSample(ddraw_stream, surface, NULL, 0, &stream_sample);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++
++    media_sample = ammediastream_allocate_sample(&source, (const BYTE *)rgb32_data, sizeof(rgb32_data));
++    ammediastream_mem_input_pin = mem_input_pin;
++    ammediastream_media_sample = media_sample;
++    ammediastream_sleep_time = 0;
++    ammediastream_expected_hr = S_OK;
++    thread = CreateThread(NULL, 0, ammediastream_receive, NULL, 0, NULL);
++
++    Sleep(100);
++    hr = IDirectDrawStreamSample_Update(stream_sample, 0, NULL, NULL, 0);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    hr = IDirectDrawSurface_Lock(surface, NULL, &desc, 0, NULL);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    if (hr == S_OK)
++    {
++        for (i = 0; i < 8; ++i)
++        {
++            WORD got = ((const WORD *)((const BYTE *)desc.lpSurface + (i / 4) * desc.u1.lPitch))[i % 4];
++            ok(got == rgb565_expect[i], "Pixel %d: got %#06x, expected %#06x.\n", i, got, rgb565_expect[i]);
++        }
++        IDirectDrawSurface_Unlock(surface, desc.lpSurface);
++    }
++
++    ok(!WaitForSingleObject(thread, 2000), "Wait timed out.\n");
++    CloseHandle(thread);
++    ref = IMediaSample_Release(media_sample);
++    ok(!ref, "Got outstanding refcount %ld.\n", ref);
++
++    hr = IAMMultiMediaStream_SetState(mmstream, STREAMSTATE_STOP);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    IGraphBuilder_Disconnect(graph, pin);
++    IGraphBuilder_Disconnect(graph, &source.source.pin.IPin_iface);
++
++    IDirectDrawStreamSample_Release(stream_sample);
++    IDirectDrawSurface_Release(surface);
++    ref = IAMMultiMediaStream_Release(mmstream);
++    ok(!ref, "Got outstanding refcount %ld.\n", ref);
++    IMediaFilter_Release(media_filter);
++    ref = IGraphBuilder_Release(graph);
++    ok(!ref, "Got outstanding refcount %ld.\n", ref);
++    IMemInputPin_Release(mem_input_pin);
++    IPin_Release(pin);
++    IDirectDrawMediaStream_Release(ddraw_stream);
++    ref = IMediaStream_Release(stream);
++    ok(!ref, "Got outstanding refcount %ld.\n", ref);
++    ref = IDirectDraw_Release(ddraw);
++    ok(!ref, "Got outstanding refcount %ld.\n", ref);
++}
++
+ static void test_ddrawstream_receive(void)
+ {
+     ALLOCATOR_PROPERTIES properties =
+@@ -9832,6 +9976,7 @@ START_TEST(amstream)
+     test_ddrawstream_create_sample();
+     test_ddrawstream_get_format();
+     test_ddrawstream_set_format();
++    test_ddrawstream_set_format_running();
+     test_ddrawstream_receive();
+     test_ddrawstream_begin_flush_end_flush();
+     test_ddrawstream_new_segment();

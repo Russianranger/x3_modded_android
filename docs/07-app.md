@@ -139,9 +139,18 @@ files) live in `winegstreamer`, which needs GStreamer.
 
 ### Patched Wine DLLs
 
-The comms faces reach X3 through Wine's `amstream.dll` (DirectDraw media streams). Wine 10.0 has
-a bug there that crashed the sixth Thor run when an NPC was hailed (see the device runs below).
-`patches/wine/` holds the fix. CI builds `amstream.dll` from the `wine-10.0` tag with the patch,
+The comms faces reach X3 through Wine's `amstream.dll` (DirectDraw media streams). X3 creates
+its face samples on its own surfaces after the video graph is already running, and that changes
+the stream's pixel format. Wine 10.0 then tries to reconnect the running graph, which the decoder
+refuses, and it crashed the sixth Thor run when an NPC was hailed (see the device runs below).
+`patches/wine/` holds the fixes:
+
+- **0001:** when the reconnect is refused, keep both sides connected and fail the call cleanly,
+  and never read a frame without a format.
+- **0002:** accept the change instead when both formats are 16, 24 or 32-bit RGB of the same
+  size, and convert each frame's pixels while copying it into X3's surface.
+
+ CI builds `amstream.dll` from the `wine-10.0` tag with the patch,
 then runs Wine's own amstream conformance tests twice on the runtime's exact Wine build (Kron4ek
 10.0 WoW64): once with the stock DLL, once with the patched one. The patched run must pass a test
 the stock run fails and must not fail any test the stock run passes. The app binds the DLL over the
@@ -395,9 +404,9 @@ counter). The present mode was IMMEDIATE, the frame cap 60, and audio ran throug
 **Changes in 0.1.7:**
 
 - **Media add-on v2** with libav, for WMA 2 voices. Tap **Download media add-on** again.
-- **Patched `amstream.dll`** (`patches/wine/0001`): when the upstream disconnect fails, `SetFormat`
-  now fails cleanly and leaves both sides connected with the old format. `Receive` also refuses
-  samples when it has no format. See "Patched Wine DLLs".
+- **Patched `amstream.dll`** (`patches/wine/0001`, `0002`): a format change on the running comms
+  video is now converted per frame instead of reconnecting. Where it can't be converted, it fails
+  cleanly with both sides still connected. See "Patched Wine DLLs".
 - **Load time:**
   - CPU profiles **fast** (new default) and **fastest**, written into X3AP.exe's Box64 section.
   - The main-thread core boost.
