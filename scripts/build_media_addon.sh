@@ -69,7 +69,7 @@ if tar -tvzf "$out/media-addon-arm64.tar.gz" | grep -qv '^[-l]'; then echo "add-
 
 # --- tests: native GStreamer ---------------------------------------------------------------
 for element in decodebin audioconvert audioresample wavparse avidemux mpegaudioparse mpg123audiodec \
-               mpeg2dec mpegpsdemux mpegvideoparse asfdemux avdec_wmav2 avdec_mpeg1video \
+               mpeg2dec mpegpsdemux mpegvideoparse asfdemux avdec_wmav2 avdec_mpeg2video \
                lamemp3enc wavenc audiotestsrc videotestsrc avenc_wmav2 avenc_mpeg1video; do
     gst-inspect-1.0 --exists "$element" || { echo "missing element $element" >&2; exit 1; }
 done

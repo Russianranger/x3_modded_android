@@ -50,12 +50,12 @@ stop_requested = False
 stop_reason = None
 
 
-# Music and voices (fifth device run: still silent with GStreamer present). X3 opens its streams
-# through amstream (IAMMultiMediaStream::OpenFile) and/or ACM; these channels name the files and
-# show where a graph or conversion fails, at a few lines per stream. Trim once audio works.
+# Music and voices: warnings and fixmes of the DirectShow, ACM and winegstreamer channels name
+# where a graph or conversion fails at a few lines per stream. amstream logs on the quartz channel;
+# its traces (file names, formats) are heavy, so they come with "Sound diagnostics" only.
 MEDIA_DEBUG = ','.join(level + '+' + channel for channel in
-                       ('amstream', 'quartz', 'strmbase', 'winegstreamer', 'qasf', 'wmvcore', 'dmo',
-                        'msacm', 'mpeg3', 'mp3dmod', 'mfplat') for level in ('warn', 'fixme')) + ',trace+amstream'
+                       ('quartz', 'strmbase', 'winegstreamer', 'qasf', 'wmvcore', 'dmo',
+                        'msacm', 'mpeg3', 'mp3dmod', 'mfplat') for level in ('warn', 'fixme'))
 
 
 def wine_debug(verbose=False, sound=False):
@@ -593,6 +593,13 @@ class Supervisor:
             if not binary.is_file() or hashlib.sha256(binary.read_bytes()).hexdigest() != build['sha256']:
                 raise RuntimeError('Bundled Box64 failed verification; reinstall the APK')
             self.update(box64_build={'commit': build['commit'], 'patches': [p['name'] for p in build['patches']]})
+        if (HERE / 'wine-dlls.json').is_file():
+            build = json.loads((HERE / 'wine-dlls.json').read_text())
+            for name, expected in build['dlls'].items():
+                installed = Path('/opt/wine/lib/wine/i386-windows') / name
+                if not installed.is_file() or hashlib.sha256(installed.read_bytes()).hexdigest() != expected['sha256']:
+                    raise RuntimeError(f'Patched Wine {name} failed verification; reinstall the APK')
+            self.update(wine_patches=[p['name'] for p in build['patches']])
         native_log = LOGS / 'x3-proot.log'
         observed = False
         if native_log.is_file():

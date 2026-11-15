@@ -21,7 +21,7 @@ final class GameRuntime {
         "client_metrics.py","log_retention.py","runtime_probe.py","pe_info.py"};
     private static final String[] PAYLOAD={"libasound_module_pcm_trasc.so","audio-bundle.json","turnip.so","turnip-26.0.0.so","vulkan-probe",
         "dxvk-d3d9.dll","dxvk-d3d9-x64.dll","vulkan-bundle.json","wineserver","wineserver-patch.json","x11-frame-bridge","presentation-bundle.json",
-        "payload-provenance.json","box64","box64-build.json","x3pin.exe","wintools-build.json"};
+        "payload-provenance.json","box64","box64-build.json","x3pin.exe","wintools-build.json","amstream.dll","wine-dlls.json"};
     private static final String[] EXECUTABLE={"vulkan-probe","wineserver","x11-frame-bridge","box64"};
     final Context context;
     final AppPaths paths;
@@ -123,6 +123,8 @@ final class GameRuntime {
                 "-b",new File(paths.backend,"wineserver").getPath()+":/opt/wine/bin/wineserver",
                 // Patched build of the runtime's own Box64 commit (patches/box64; runner verifies its hash).
                 "-b",new File(paths.backend,"box64").getPath()+":/usr/local/bin/box64",
+                // Patched Wine 10.0 builtins (patches/wine): the comm-video crash fix in amstream.
+                "-b",new File(paths.backend,"amstream.dll").getPath()+":/opt/wine/lib/wine/i386-windows/amstream.dll",
                 "-b","/dev","-b","/proc","-b","/sys",
                 "-b",paths.game.getPath()+":/game","-b",paths.prefix.getPath()+":/prefix","-b",paths.saves.getPath()+":/saves","-b",run.getPath()+":/session",
                 "-b",paths.logs.getPath()+":/logs","-b",paths.backend.getPath()+":/opt/x3","-b",tmp.getPath()+":/tmp",

@@ -68,6 +68,8 @@ final class AudioBridge implements AutoCloseable {
     private final class Connection implements Runnable,AudioPcmSession.Sink {
         final LocalSocket socket;AudioTrack track;int capacity;boolean ended;
         long submitted,nonzero,nextReport;boolean firstSignal;
+        // X3: level per report interval. "nonzero" cannot tell quiet music from near-silence (sixth Thor run).
+        double levelSquares;long levelSamples;int levelPeak;
         Connection(LocalSocket socket){this.socket=socket;}
         public void run(){
             AudioPcmSession session=new AudioPcmSession();
@@ -101,7 +103,13 @@ final class AudioBridge implements AutoCloseable {
         public synchronized void start()throws IOException{if(track!=null){configureBuffer();track.play();record("stream_start queued_frames="+submitted+" start_frames="+threshold());}}
         public synchronized void stop(){if(track!=null){report("stream_stop");track.pause();track.flush();submitted=nonzero=0;}}
         private void report(String event){record(event+" written="+submitted+" played="+Integer.toUnsignedLong(track.getPlaybackHeadPosition())+
-            " nonzero_samples="+nonzero+" underruns="+track.getUnderrunCount()+" state="+track.getPlayState()+" volume="+volume);}
+            " nonzero_samples="+nonzero+" underruns="+track.getUnderrunCount()+" state="+track.getPlayState()+" volume="+volume+level());}
+        private String level(){
+            if(levelSamples==0)return "";
+            double rms=Math.sqrt(levelSquares/levelSamples)/32768.0,peak=levelPeak/32768.0;
+            levelSquares=0;levelSamples=0;levelPeak=0;
+            return String.format(java.util.Locale.ROOT," peak_dbfs=%.1f rms_dbfs=%.1f",peak>0?20*Math.log10(peak):-120.0,rms>0?20*Math.log10(rms):-120.0);
+        }
         public synchronized int position()throws IOException {
             if(track==null)throw new IOException("Audio stream closed");
             long now=android.os.SystemClock.elapsedRealtime();
@@ -115,7 +123,9 @@ final class AudioBridge implements AutoCloseable {
         public synchronized int write(byte[] bytes,int length)throws IOException {
             if(track==null)throw new IOException("Audio stream closed");
             int accepted=track.write(bytes,0,length,AudioTrack.WRITE_NON_BLOCKING);
-            if(accepted>0){submitted+=accepted/4;for(int i=0;i+1<accepted;i+=2)if(bytes[i]!=0||bytes[i+1]!=0)nonzero++;
+            if(accepted>0){submitted+=accepted/4;
+                for(int i=0;i+1<accepted;i+=2){int v=(short)((bytes[i]&0xff)|(bytes[i+1]<<8));if(v!=0)nonzero++;
+                    int a=v<0?-v:v;if(a>levelPeak)levelPeak=a;levelSquares+=(double)v*v;levelSamples++;}
                 if(nonzero>0&&!firstSignal){firstSignal=true;record("stream_first_signal written="+submitted);}}
             return accepted;
         }

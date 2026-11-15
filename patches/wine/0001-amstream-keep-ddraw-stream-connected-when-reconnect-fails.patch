@@ -1,0 +1,77 @@
+diff --git a/dlls/amstream/ddrawstream.c b/dlls/amstream/ddrawstream.c
+index dc77cb8..b9e2692 100644
+--- a/dlls/amstream/ddrawstream.c
++++ b/dlls/amstream/ddrawstream.c
+@@ -631,7 +631,20 @@ static HRESULT WINAPI ddraw_IDirectDrawMediaStream_SetFormat(IDirectDrawMediaStr
+         old_peer = stream->peer;
+         IPin_AddRef(old_peer);
+ 
+-        IFilterGraph_Disconnect(stream->graph, stream->peer);
++        /* The upstream pin refuses to disconnect while its filter runs (VFW_E_NOT_STOPPED).
++         * Leave both sides connected then: disconnecting only our side freed stream->mt under a
++         * peer that keeps delivering, and the next Receive dereferenced a NULL format (X3: Albion
++         * Prelude creates its comm video samples while the graph runs). */
++        if (FAILED(hr = IFilterGraph_Disconnect(stream->graph, stream->peer)))
++        {
++            ERR("Cannot reconnect stream %p for %lux%lu, %lu bpp (flags %#lx): upstream disconnect failed, hr %#lx.\n",
++                    stream, format->dwWidth, format->dwHeight, format->ddpfPixelFormat.dwRGBBitCount, format->dwFlags, hr);
++            stream->format = old_format;
++            IPin_Release(old_peer);
++            FreeMediaType(&old_media_type);
++            LeaveCriticalSection(&stream->cs);
++            return DDERR_INVALIDSURFACETYPE;
++        }
+         IFilterGraph_Disconnect(stream->graph, &stream->IPin_iface);
+         hr = IFilterGraph_ConnectDirect(stream->graph, old_peer, &stream->IPin_iface, NULL);
+         if (FAILED(hr))
+@@ -1375,6 +1388,13 @@ static HRESULT WINAPI ddraw_meminput_Receive(IMemInputPin *iface, IMediaSample *
+         return S_FALSE;
+     }
+ 
++    if (!stream->peer || !stream->mt.pbFormat || stream->mt.cbFormat < sizeof(VIDEOINFOHEADER))
++    {
++        /* Not (or no longer) connected: nothing to describe the sample with. */
++        LeaveCriticalSection(&stream->cs);
++        return VFW_E_NOT_CONNECTED;
++    }
++
+     bitmap_info = &((VIDEOINFOHEADER *)stream->mt.pbFormat)->bmiHeader;
+ 
+     stride = ((bitmap_info->biWidth * bitmap_info->biBitCount + 31) & ~31) / 8;
+diff --git a/dlls/amstream/tests/amstream.c b/dlls/amstream/tests/amstream.c
+index b796dbd..9ebbfe5 100644
+--- a/dlls/amstream/tests/amstream.c
++++ b/dlls/amstream/tests/amstream.c
+@@ -5747,6 +5747,32 @@ static void test_ddrawstream_set_format(void)
+     ok(((VIDEOINFO *)source.source.pin.mt.pbFormat)->bmiHeader.biHeight == -555,
+             "Got height %ld.\n", ((VIDEOINFO *)source.source.pin.mt.pbFormat)->bmiHeader.biHeight);
+ 
++    /* A format that needs a reconnect while the stream runs: the upstream pin cannot
++     * disconnect, so the call fails and both sides stay connected with the old type. */
++    hr = IAMMultiMediaStream_SetState(mmstream, STREAMSTATE_RUN);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++    source.preferred_mt = &rgb8_mt;
++    hr = IDirectDrawMediaStream_SetFormat(ddraw_stream, &rgb8_format, NULL);
++    ok(FAILED(hr), "Got hr %#lx.\n", hr);
++    {
++        IPin *peer = NULL;
++        AM_MEDIA_TYPE current;
++        hr = IPin_ConnectedTo(pin, &peer);
++        ok(hr == S_OK, "Got hr %#lx.\n", hr);
++        ok(peer == &source.source.pin.IPin_iface, "Got peer %p.\n", peer);
++        if (peer) IPin_Release(peer);
++        hr = IPin_ConnectionMediaType(pin, &current);
++        ok(hr == S_OK, "Got hr %#lx.\n", hr);
++        if (hr == S_OK)
++        {
++            ok(IsEqualGUID(&current.subtype, &MEDIASUBTYPE_RGB555), "Got subtype %s.\n", wine_dbgstr_guid(&current.subtype));
++            ok(!!current.pbFormat, "Expected a format block.\n");
++            FreeMediaType(&current);
++        }
++    }
++    hr = IAMMultiMediaStream_SetState(mmstream, STREAMSTATE_STOP);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
++
+     hr = IGraphBuilder_Disconnect(graph, &source.source.pin.IPin_iface);
+     ok(hr == S_OK, "Got hr %#lx.\n", hr);
+     hr = IGraphBuilder_Disconnect(graph, pin);
