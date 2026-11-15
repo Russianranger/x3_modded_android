@@ -7,12 +7,14 @@ queued frames and reference pictures: the first frames after the seek showed, or
 from, the old position. X3: Albion Prelude keeps all comms faces in one MPEG-1 movie and seeks
 between them, so faces of other pilots flickered through.
 
-On EndFlush, flush the wg_transform and its sample queue. For video, also skip input until the
-next sync point (if the source marks them at all) and drop decoded frames that end before the new
-segment starts.
+On EndFlush, flush the wg_transform and its sample queue, and reset the decoder's QoS deadline:
+wg_transform_flush() drains rather than flushes the GStreamer pipeline, so the decoder kept the
+deadline from before the seek and dropped every frame up to it. For video, also skip input until
+the next sync point (if the source marks them at all) and drop decoded frames that end before the
+new segment starts.
 ---
 diff --git a/dlls/winegstreamer/quartz_transform.c b/dlls/winegstreamer/quartz_transform.c
-index ff57ea0..6c48c65 100644
+index ff57ea0..c6a281a 100644
 --- a/dlls/winegstreamer/quartz_transform.c
 +++ b/dlls/winegstreamer/quartz_transform.c
 @@ -43,6 +43,14 @@ struct transform
@@ -92,7 +94,7 @@ index ff57ea0..6c48c65 100644
          hr = IMemInputPin_Receive(filter->source.pMemInputPin, output_sample);
          if (FAILED(hr))
          {
-@@ -365,11 +405,37 @@ static HRESULT WINAPI transform_sink_receive(struct strmbase_sink *pin, IMediaSa
+@@ -365,11 +405,40 @@ static HRESULT WINAPI transform_sink_receive(struct strmbase_sink *pin, IMediaSa
      return S_OK;
  }
  
@@ -107,6 +109,9 @@ index ff57ea0..6c48c65 100644
 +    {
 +        wg_transform_flush(filter->transform);
 +        wg_sample_queue_flush(filter->sample_queue, true);
++        /* wg_transform_flush() drains rather than flushes the GStreamer pipeline, so the decoder
++         * keeps the QoS deadline from before the seek and drops every frame up to it. Reset it. */
++        wg_transform_notify_qos(filter->transform, false, 1.0, 0, 0);
 +        if (IsEqualGUID(&filter->sink.pin.mt.majortype, &MEDIATYPE_Video))
 +        {
 +            filter->need_sync_point = filter->seen_sync_point;

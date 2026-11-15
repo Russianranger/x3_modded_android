@@ -3,10 +3,12 @@
  *
  *   x3media.exe audio FILE RATE CHANNELS   IAudioMediaStream with a fixed PCM format set before
  *                                          OpenFile (X3: music and speech); prints what arrived.
- *   x3media.exe seek FILE CLIPS            IDirectDrawMediaStream on a movie made of CLIPS one-second
- *                                          solid-colour clips (palette below); seeks between clips
- *                                          while running (X3: comms faces in mov\00001.dat) and
- *                                          checks every frame it gets against the clip's colour.
+ *   x3media.exe seek FILE CLIPS            IDirectDrawMediaStream on a movie made of CLIPS solid-colour
+ *                                          clips (palette below). Plays it once to learn where each
+ *                                          clip starts, then seeks between clips while running (X3:
+ *                                          comms faces in mov\00001.dat). Every frame must show the
+ *                                          clip, or the clip before it: GStreamer's MPEG-PS demuxer
+ *                                          lands early and Wine gets no timestamps to drop by.
  *
  * Exit code 0 when the check passed. One line per result, prefixed "x3media:".
  * Build: i686-w64-mingw32-gcc -municode -O2 -o x3media.exe x3media.c -lole32 -luuid -lstrmiids -lddraw
@@ -152,23 +154,32 @@ static int channel(DWORD pixel, DWORD mask)
     return ((pixel & mask) >> shift) * 255 / max;
 }
 
+/* Mean colour of a 16x16 block in the middle of the picture: the clips carry noise, so that the
+ * movie has the near-constant bitrate of a real one (GStreamer's MPEG-PS demuxer seeks by it). */
 static int surface_colour(IDirectDrawSurface *surface, const RECT *rect)
 {
     DDSURFACEDESC desc = {sizeof(desc)};
-    const BYTE *row;
-    DWORD pixel = 0, bpp;
-    int colour;
+    int x, y, r = 0, g = 0, b = 0, colour;
+    DWORD bpp;
 
     if (FAILED(IDirectDrawSurface_Lock(surface, NULL, &desc, DDLOCK_WAIT, NULL)))
         return -1;
     bpp = desc.ddpfPixelFormat.dwRGBBitCount;
-    row = (const BYTE *)desc.lpSurface + ((rect->top + rect->bottom) / 2) * desc.lPitch;
-    row += ((rect->left + rect->right) / 2) * (bpp / 8);
-    if (bpp == 16) pixel = *(const WORD *)row;
-    else if (bpp == 24) pixel = row[0] | (row[1] << 8) | (row[2] << 16);
-    else if (bpp == 32) pixel = *(const DWORD *)row;
-    colour = nearest_colour(channel(pixel, desc.ddpfPixelFormat.dwRBitMask),
-            channel(pixel, desc.ddpfPixelFormat.dwGBitMask), channel(pixel, desc.ddpfPixelFormat.dwBBitMask));
+    for (y = -8; y < 8; ++y)
+        for (x = -8; x < 8; ++x)
+        {
+            const BYTE *p = (const BYTE *)desc.lpSurface + ((rect->top + rect->bottom) / 2 + y) * desc.lPitch
+                    + ((rect->left + rect->right) / 2 + x) * (bpp / 8);
+            DWORD pixel = 0;
+
+            if (bpp == 16) pixel = *(const WORD *)p;
+            else if (bpp == 24) pixel = p[0] | (p[1] << 8) | (p[2] << 16);
+            else if (bpp == 32) pixel = *(const DWORD *)p;
+            r += channel(pixel, desc.ddpfPixelFormat.dwRBitMask);
+            g += channel(pixel, desc.ddpfPixelFormat.dwGBitMask);
+            b += channel(pixel, desc.ddpfPixelFormat.dwBBitMask);
+        }
+    colour = nearest_colour(r / 256, g / 256, b / 256);
     IDirectDrawSurface_Unlock(surface, NULL);
     return colour;
 }
@@ -176,7 +187,8 @@ static int surface_colour(IDirectDrawSurface *surface, const RECT *rect)
 static int test_seek(const WCHAR *file, int clips)
 {
     static const int order[] = {3, 1, 6, 2, 5, 0, 7, 4, 4, 2};
-    unsigned int i, frames = 0, wrong = 0, failures = 0;
+    unsigned int i, frames = 0, wrong = 0, early = 0, unsettled = 0, failures = 0;
+    LONGLONG clip_start[ARRAY_SIZE(palette)];
     IDirectDrawStreamSample *sample;
     IDirectDrawMediaStream *ddraw;
     IDirectDrawSurface *surface;
@@ -184,6 +196,7 @@ static int test_seek(const WCHAR *file, int clips)
     IGraphBuilder *graph;
     IMediaStream *stream;
     IAMMultiMediaStream *mms;
+    int previous = -1;
     RECT rect;
     HRESULT hr;
 
@@ -203,16 +216,39 @@ static int test_seek(const WCHAR *file, int clips)
     IGraphBuilder_QueryInterface(graph, &iid_media_seeking, (void **)&seeking);
     IAMMultiMediaStream_SetState(mms, STREAMSTATE_RUN);
 
+    /* Where each clip starts when the movie simply plays: seeking there must show the same. */
+    for (i = 0; i < ARRAY_SIZE(clip_start); ++i) clip_start[i] = -1;
+    for (i = 0; i < 400 && IDirectDrawStreamSample_Update(sample, 0, NULL, NULL, 0) == S_OK; ++i)
+    {
+        STREAM_TIME start = 0, end = 0;
+        int colour = surface_colour(surface, &rect);
+
+        IDirectDrawStreamSample_GetSampleTimes(sample, &start, &end, NULL);
+        if (colour >= 0 && colour != previous && clip_start[colour] < 0)
+            clip_start[colour] = start;
+        previous = colour;
+    }
+    printf("x3media: played %u frames; clips start at", i);
+    for (i = 0; i < (unsigned int)clips; ++i)
+        printf(" %s %.2f", palette[i].name, clip_start[i] / 1e7);
+    printf("\n");
+    for (i = 0; i < (unsigned int)clips; ++i)
+        if (clip_start[i] < 0)
+        {
+            printf("x3media: clip %d (%s) never appeared in plain playback\n", i, palette[i].name);
+            return 1;
+        }
+
     for (i = 0; i < ARRAY_SIZE(order); ++i)
     {
-        int clip = order[i] % clips, frame, seen[8] = {0};
-        LONGLONG position = clip * (LONGLONG)10000000 + 400000;   /* 40 ms into the clip */
-        char line[256];
+        int clip = order[i] % clips, frame, last_wrong = -1;
+        LONGLONG target = clip_start[clip] + 3000000;   /* 0.3 s into the clip, as X3 seeks to a face */
+        char line[1024];
         int length;
 
-        hr = IMediaSeeking_SetPositions(seeking, &position, AM_SEEKING_AbsolutePositioning, NULL, AM_SEEKING_NoPositioning);
-        length = sprintf(line, "x3media: seek to clip %d (%s), hr %#lx, frames:", clip, palette[clip].name, hr);
-        for (frame = 0; frame < 6; ++frame)
+        hr = IMediaSeeking_SetPositions(seeking, &target, AM_SEEKING_AbsolutePositioning, NULL, AM_SEEKING_NoPositioning);
+        length = sprintf(line, "x3media: seek to %.2f in clip %d (%s), hr %#lx, frames:", target / 1e7, clip, palette[clip].name, hr);
+        for (frame = 0; frame < 10; ++frame)    /* 0.4 s: all inside the clip */
         {
             STREAM_TIME start = 0, end = 0;
             int colour;
@@ -226,13 +262,22 @@ static int test_seek(const WCHAR *file, int clips)
             IDirectDrawStreamSample_GetSampleTimes(sample, &start, &end, NULL);
             colour = surface_colour(surface, &rect);
             ++frames;
-            if (colour != clip) ++wrong;
-            if (colour >= 0) ++seen[colour];
+            if (colour != clip)
+            {
+                last_wrong = frame;
+                /* GStreamer's MPEG-PS demuxer lands somewhat early, and Wine's MPEG-1 splitter gets
+                 * no timestamps from it to drop those frames by: the end of the previous clip can
+                 * show first. Anything else is a fault. */
+                if (colour == clip - 1) ++early;
+                else ++wrong;
+            }
             length += sprintf(line + length, " %s@%.2f", colour >= 0 ? palette[colour].name : "?", start / 1e7);
         }
+        if (last_wrong == 9) ++unsettled;   /* still on the previous clip after 0.4 s */
         printf("%s\n", line);
     }
-    printf("x3media: seek %ls: %u frames, %u from the wrong clip, %u failed updates\n", file, frames, wrong, failures);
+    printf("x3media: seek %ls: %u frames, %u from an unrelated clip, %u from the previous clip (%u seeks never got"
+            " past it in 0.4 s), %u failed updates\n", file, frames, wrong, early, unsettled, failures);
     IAMMultiMediaStream_SetState(mms, STREAMSTATE_STOP);
     return !frames || wrong || failures;
 }

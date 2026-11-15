@@ -100,6 +100,16 @@ def run_scenarios(label):
         results[name] = result.returncode == 0
         print(f"--- {label}: {name}: {'passed' if results[name] else 'FAILED (exit %d)' % result.returncode}")
         print("\n".join(lines[-14:]))
+        if not results[name] and label.startswith("patched"):
+            # Once more with DirectShow and GStreamer traces, for the reason.
+            env = dict(wine_env(prefix, "+quartz,+strmbase,+loaddll"), GST_DEBUG="2,WINE:4")
+            traced = subprocess.run([str(wine), str(dlls / "x3media.exe"), *arguments], env=env, cwd=drive,
+                                    capture_output=True, text=True, errors="replace", timeout=300)
+            noise = re.compile(r"AddRef|Release|StdMediaSample2_|BaseMemAllocator_|enum_pins|pin_Query|FM2_Read"
+                               r"|QueryInterface|DllGetClassObject|DSCF_|filter_mapper|AMFilterData|SystemClockImpl")
+            text = [line for line in (traced.stdout + traced.stderr).splitlines() if not noise.search(line)]
+            print(f"--- {label}: {name}: trace (last 160 of {len(text)} lines)")
+            print("\n".join(line[:240] for line in text[-160:]))
     finish(prefix)
     print(f"--- {label}: GStreamer splitter registered by regsvr32: {registered}")
     return results, registered

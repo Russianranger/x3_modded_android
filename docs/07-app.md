@@ -138,22 +138,56 @@ files) live in `winegstreamer`, which needs GStreamer.
 
 ### Patched Wine DLLs
 
-The comms faces reach X3 through Wine's `amstream.dll` (DirectDraw media streams). X3 creates
-its face samples on its own surfaces after the video graph is already running, and that changes
-the stream's pixel format. Wine 10.0 then tries to reconnect the running graph, which the decoder
-refuses, and it crashed the sixth Thor run when an NPC was hailed (see the device runs below).
-`patches/wine/` holds the fixes:
+X3 plays its media through Wine's DirectShow media streams (`amstream.dll`) and Wine's GStreamer
+filters (`winegstreamer.dll`). `patches/wine/` holds fixes for both, found on the Thor:
 
-- **0001:** when the reconnect is refused, keep both sides connected and fail the call cleanly,
-  and never read a frame without a format.
-- **0002:** accept the change instead when both formats are 16, 24 or 32-bit RGB of the same
-  size, and convert each frame's pixels while copying it into X3's surface.
+- **0001, amstream:** X3 creates its comms face samples on its own surfaces after the video
+  graph is already running, which changes the stream's pixel format. Wine 10.0 then tried to
+  reconnect the running graph, which the decoder refuses, and read a format it had already freed.
+  That was the crash when hailing an NPC in the sixth Thor run. Now, when the reconnect is
+  refused, both sides stay connected, the call fails cleanly, and no frame is read without a
+  format.
+- **0002, amstream:** when both formats are 16, 24 or 32-bit RGB of the same size, accept the
+  change instead and convert each frame's pixels while copying it into X3's surface.
+- **0003, amstream:** X3 sets its mixer format on the audio stream before opening a file, and
+  then the stream accepts nothing else. But it offered a fixed 11025 Hz mono type with no subtype
+  to filters upstream. Now it offers the format X3 set, so the GStreamer splitter can resample
+  the 48 kHz menu track and the speech into it.
+- **0004, winegstreamer:** X3 keeps all comms faces in one MPEG-1 movie and seeks between pilots.
+  Wine's DirectShow decoders ignored flushes, so after a seek GStreamer kept the old position's
+  queued frames and reference pictures. Now the decoders flush on a seek, video waits for the next
+  key frame, and frames from before the seek target are dropped.
 
- CI builds `amstream.dll` from the `wine-10.0` tag with the patch,
-then runs Wine's own amstream conformance tests twice on the runtime's exact Wine build (Kron4ek
-10.0 WoW64): once with the stock DLL, once with the patched one. The patched run must pass a test
-the stock run fails and must not fail any test the stock run passes. The app binds the DLL over the
-runtime's copy, and the runner checks its hash (`wine_patches` in `x3-state.json`).
+**Building and testing:** CI builds both DLLs (PE side only; `winegstreamer.dll` keeps using the
+runtime's own `winegstreamer.so` from the same source) from the `wine-10.0` tag. It then runs, on
+the runtime's exact Wine build (Kron4ek 10.0 WoW64) with GStreamer, stock DLLs against patched:
+
+- Wine's amstream conformance suite. The patched DLL must pass a test the stock one fails, and
+  must not fail one it passes.
+- Wine's suites for the MPEG decoders and splitter (`quartz_test.exe mpegvideo`, `mpegsplit`,
+  `mpegaudio`, `mpeglayer3`). No new failures allowed.
+- `tests/wine/x3media.c`, which plays media through amstream the way X3 does, in a prefix set up
+  like the device's (made with winegstreamer disabled, then registered as the runner does it):
+  - a 44.1 kHz MP3 (sector music);
+  - a 48 kHz MP3 into a 44.1 kHz stream (the menu track);
+  - WMA 2 in ASF (speech);
+  - seeking back and forth in one MPEG-1 movie of solid-colour clips, checking every frame's colour
+    (the comms faces).
+
+  All four must pass with the patched DLLs.
+
+The app binds both DLLs over the runtime's copies, and the runner checks their hashes
+(`wine_patches` in `x3-state.json`).
+
+### Media filters in older prefixes
+
+A Wine prefix made before the media add-on was installed has winegstreamer's COM classes, but
+not its DirectShow filter entries. Those are written by `DllRegisterServer()`, which never ran
+while winegstreamer was disabled. Without them DirectShow has no GStreamer splitter, so speech
+and the menu track can't be rendered, while MPEG files still play through the MPEG-1 splitter.
+With the add-on installed, the runner looks for the splitter's entry in `system.reg` before each
+launch and runs `regsvr32 winegstreamer.dll` (32- and 64-bit) if it's missing. The
+`gstreamer_filters` field in `x3-state.json` shows the result.
 
 ## Controls
 
@@ -220,7 +254,7 @@ python3 -I -m unittest discover -s tests -v
 - **Display:** frames come over RFB only. TRASC's native presentation library is tied to TRASC's
   package name, so its zero-copy path is not available yet.
 - **Music, comms voices and the comms faces** need the media add-on (see below). Without it, only
-  sound effects play. Music was still silent with it in the sixth Thor run; that is open.
+  sound effects play.
 - **Loading** from the menu into a game took 180 s in the sixth Thor run. It is bound by
   emulating X3's own code, so settings alone are unlikely to reach 30 s.
 - **Route A** (native Linux `X3AP_main` via BOX32) is not wired into the app.
@@ -451,3 +485,46 @@ stopped 155 s later.
   call/return. Both fast profiles are marked as experiments.
 - The runner warns about a main thread that spins without kernel work (`main_thread_spinning`).
 - The `uclamp.min` request and its launcher option are gone.
+
+### 15 November 2026, AYN Thor, build 0.1.8
+
+Sound diagnostics were on for this run.
+
+**What worked:**
+
+- The game started and loaded, and sector music played.
+- The comms face showed instead of crashing (patches 0001 and 0002).
+- The load pauses were 10.7 s and 17.1 s at startup and 117 s into the game, with a longer
+  302 s pause later.
+
+**Problems:**
+
+- **No main menu music, no Betty, no NPC voices.** X3 sets its mixer format on an amstream audio
+  stream, then opens the file:
+  - The menu track `soundtrack/08404.mp3` is 48 kHz. The MPEG-1 splitter and MP3 decoder offered
+    only 48 kHz, and the stream refused anything but X3's format (`E_INVALIDARG`, then
+    `VFW_E_CANNOT_CONNECT`).
+  - Speech (`addon/mov/00144.dat`, `00244.dat`, WMA 2 in ASF) found no filter at all
+    (`VFW_E_CANNOT_RENDER`). The GStreamer splitter wasn't among the registered DirectShow
+    filters (see "Media filters in older prefixes").
+  - Sector tracks are 44.1 kHz, which is why they played.
+- **The comms face flickered between pilots.** All faces are in `mov/00001.dat`: a 640 MB,
+  51-minute MPEG-1 movie at 256×256 and 30 fps. X3 seeks to a pilot's clip with
+  `IMediaSeeking::SetPositions`. The decoder kept the old position's frames and reference pictures
+  across the seek.
+- **The log lost the middle of the session.** Tracing dsound and dsound3d produced three
+  quarters of the output and filled each 8 MB segment in seconds.
+
+**Reproduced off the device:** built locally with clang and Wine's headers, `x3media.exe` showed
+all three problems on stock Kron4ek Wine 10.0 with the host's GStreamer:
+
+- `0x80040217` for the 48 kHz MP3 and for ASF;
+- after seeks, 47 of 60 frames came from the wrong clip.
+
+**Changes in 0.1.9:**
+
+- The runner registers winegstreamer's filters when they are missing.
+- Patches 0003 (amstream) and 0004 (winegstreamer), with the CI scenarios above.
+- **Sound diagnostics** trace DirectShow only (`quartz`, `strmbase`, `msacm`). They leave out
+  per-sample and reference-counting lines, and count what they leave out
+  (`wine_log_dropped_lines`).
