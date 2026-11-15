@@ -9,9 +9,14 @@ Enumerate the set format as PCM, then the same with the other of mono and stereo
 16-bit mono or stereo PCM besides, and convert it on the way in: remix, and resample linearly.
 X3: Albion Prelude sets its mixer format before OpenFile(); its menu music is 48 kHz and its
 speech is mono WMA, which Wine's GStreamer splitter can neither resample nor remix.
+
+Also state allocator requirements: buffers of a tenth of a second. The PCM types offered have the
+usual sample size of one block, and Wine's MPEG layer-3 decoder (like Windows') sizes its buffers
+from the connected type's sample size, so it sent X3's music 16 bytes at a time: tens of thousands
+of samples per two seconds of music, which could not keep up on an ARM device under emulation.
 ---
 diff --git a/dlls/amstream/audiostream.c b/dlls/amstream/audiostream.c
-index d76156c..d8609ec 100644
+index d76156c..0d63d07 100644
 --- a/dlls/amstream/audiostream.c
 +++ b/dlls/amstream/audiostream.c
 @@ -34,6 +34,7 @@ struct queued_receive
@@ -274,7 +279,39 @@ index d76156c..d8609ec 100644
  
      LeaveCriticalSection(&stream->cs);
  
-@@ -1349,6 +1487,16 @@ static HRESULT WINAPI audio_meminput_Receive(IMemInputPin *iface, IMediaSample *
+@@ -1302,8 +1440,30 @@ static HRESULT WINAPI audio_meminput_NotifyAllocator(IMemInputPin *iface, IMemAl
+ 
+ static HRESULT WINAPI audio_meminput_GetAllocatorRequirements(IMemInputPin *iface, ALLOCATOR_PROPERTIES *props)
+ {
++    struct audio_stream *stream = impl_from_IMemInputPin(iface);
++    const WAVEFORMATEX *format;
++    HRESULT hr = E_NOTIMPL;
++
+     TRACE("iface %p, props %p.\n", iface, props);
+-    return E_NOTIMPL;
++
++    /* The PCM types this pin offers have the usual sample size of one block, and Wine's MPEG
++     * layer-3 decoder (like Windows') sizes its buffers from that: it sent 16 bytes per sample,
++     * tens of thousands of samples for every two seconds of X3: Albion Prelude's music, which
++     * then could not keep up. Ask for buffers of a tenth of a second. */
++    EnterCriticalSection(&stream->cs);
++    if (stream->peer && IsEqualGUID(&stream->mt.formattype, &FORMAT_WaveFormatEx)
++            && stream->mt.cbFormat >= sizeof(WAVEFORMATEX))
++    {
++        format = (const WAVEFORMATEX *)stream->mt.pbFormat;
++        if (format->nBlockAlign && format->nAvgBytesPerSec)
++        {
++            memset(props, 0, sizeof(*props));
++            props->cbBuffer = max(format->nAvgBytesPerSec / 10 / format->nBlockAlign, 1) * format->nBlockAlign;
++            hr = S_OK;
++        }
++    }
++    LeaveCriticalSection(&stream->cs);
++    return hr;
+ }
+ 
+ static HRESULT WINAPI audio_meminput_Receive(IMemInputPin *iface, IMediaSample *sample)
+@@ -1349,6 +1509,16 @@ static HRESULT WINAPI audio_meminput_Receive(IMemInputPin *iface, IMediaSample *
      receive->length = IMediaSample_GetActualDataLength(sample);
      receive->pointer = pointer;
      receive->sample = sample;

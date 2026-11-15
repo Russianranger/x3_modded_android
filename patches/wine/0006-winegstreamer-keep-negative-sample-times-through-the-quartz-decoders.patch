@@ -1,0 +1,116 @@
+From: X3 Modded <noreply@github.com>
+Subject: [PATCH] winegstreamer: Keep negative sample times through the quartz decoders, and soften video QoS.
+
+DirectShow sample times are signed, and a splitter stamps frames from before a seek target with
+negative times: the decoder must decode them (they are reference pictures) and drop them. They went
+to GStreamer as unsigned timestamps, wrapped, and came back as times days in the future, on which
+amstream's video stream then waited forever: the video froze after seeking backwards. Hand
+GStreamer quartz times on a base of 10000 seconds instead, and quality messages on the same base.
+
+GStreamer's video decoder also drops the next frame on any lateness at all (its deadline is the
+late frame plus twice the lateness plus a frame). amstream reports lateness when the application
+takes a frame, so an application that polls at its own rate lost every other frame. Count video
+lateness under a frame (40 ms) as on time.
+---
+diff --git a/dlls/winegstreamer/gst_private.h b/dlls/winegstreamer/gst_private.h
+index 9db484c..915942a 100644
+--- a/dlls/winegstreamer/gst_private.h
++++ b/dlls/winegstreamer/gst_private.h
+@@ -162,6 +162,7 @@ void wg_sample_release(struct wg_sample *wg_sample);
+ 
+ HRESULT wg_transform_push_mf(wg_transform_t transform, IMFSample *sample,
+         struct wg_sample_queue *queue);
++LONGLONG wg_quartz_time_base(void);
+ HRESULT wg_transform_push_quartz(wg_transform_t transform, struct wg_sample *sample,
+         struct wg_sample_queue *queue);
+ HRESULT wg_transform_push_dmo(wg_transform_t transform, IMediaBuffer *media_buffer,
+diff --git a/dlls/winegstreamer/quartz_transform.c b/dlls/winegstreamer/quartz_transform.c
+index c6a281a..589a3fb 100644
+--- a/dlls/winegstreamer/quartz_transform.c
++++ b/dlls/winegstreamer/quartz_transform.c
+@@ -419,6 +419,8 @@ static HRESULT transform_sink_end_flush(struct strmbase_sink *pin)
+         /* wg_transform_flush() drains rather than flushes the GStreamer pipeline, so the decoder
+          * keeps the QoS deadline from before the seek and drops every frame up to it. Reset it. */
+         wg_transform_notify_qos(filter->transform, false, 1.0, 0, 0);
++        /* (Times before the new segment start come through negative, on the time base above
++         * 0, so this deadline drops nothing.) */
+         if (IsEqualGUID(&filter->sink.pin.mt.majortype, &MEDIATYPE_Video))
+         {
+             filter->need_sync_point = filter->seen_sync_point;
+@@ -646,16 +648,25 @@ static HRESULT handle_source_qc_notify(struct transform *filter, IBaseFilter *se
+             filter, sender, q.Type == Famine ? "Famine" : "Flood", q.Proportion,
+             debugstr_time(q.Late), debugstr_time(q.TimeStamp));
+ 
+-    /* DirectShow filters sometimes pass negative timestamps (Audiosurf uses the
+-     * current time instead of the time of the last buffer). GstClockTime is
+-     * unsigned, so clamp it to 0. */
+-    timestamp = max(q.TimeStamp, 0);
++    /* Samples reach GStreamer with their times on wg_quartz_time_base(), so negative times
++     * survive; DirectShow filters sometimes pass negative timestamps too (Audiosurf uses the
++     * current time instead of the time of the last buffer). GstClockTime is unsigned, so
++     * clamp what is left to 0. */
++    timestamp = max(q.TimeStamp + wg_quartz_time_base(), 0);
+ 
+     /* The documentation specifies that timestamp + diff must be nonnegative. */
+     diff = q.Late;
+     if (diff < 0 && timestamp < (uint64_t)-diff)
+         diff = -timestamp;
+ 
++    /* GStreamer's video decoder drops the next frame on any lateness at all (its deadline is
++     * the late frame plus twice the lateness plus a frame). amstream reports lateness when the
++     * application takes a frame, so an application that polls at its own rate, as games do,
++     * lost every other frame. Count lateness under a frame as on time: frames only start being
++     * dropped once the stream really falls behind. */
++    if (q.Type == Famine && diff > 0 && IsEqualGUID(&filter->sink.pin.mt.majortype, &MEDIATYPE_Video))
++        diff = diff > 400000 ? diff - 400000 : 0;
++
+     /* DirectShow "Proportion" describes what percentage of buffers the upstream
+      * filter should keep (i.e. dropping the rest). If frames are late, the
+      * proportion will be less than 1. For example, a proportion of 500 means
+diff --git a/dlls/winegstreamer/wg_sample.c b/dlls/winegstreamer/wg_sample.c
+index 116dbb1..46df329 100644
+--- a/dlls/winegstreamer/wg_sample.c
++++ b/dlls/winegstreamer/wg_sample.c
+@@ -379,6 +379,17 @@ HRESULT wg_transform_read_mf(wg_transform_t transform, IMFSample *sample,
+     return hr;
+ }
+ 
++/* DirectShow sample times are signed: a splitter stamps frames from before the seek target with
++ * negative times, which the decoder must decode (they are references) and then drop. GStreamer
++ * timestamps are unsigned, and a negative time came back as a time days in the future, on which
++ * a renderer then waited forever. Hand GStreamer quartz times from this base instead. */
++#define QUARTZ_TIME_BASE ((LONGLONG)10000 * 10000000)
++
++LONGLONG wg_quartz_time_base(void)
++{
++    return QUARTZ_TIME_BASE;
++}
++
+ HRESULT wg_transform_push_quartz(wg_transform_t transform, struct wg_sample *wg_sample,
+         struct wg_sample_queue *queue)
+ {
+@@ -389,12 +400,12 @@ HRESULT wg_transform_push_quartz(wg_transform_t transform, struct wg_sample *wg_
+     TRACE_(quartz)("transform %#I64x, wg_sample %p, queue %p.\n", transform, wg_sample, queue);
+ 
+     hr = IMediaSample_GetTime(sample->u.quartz.sample, &start_time, &end_time);
+-    if (SUCCEEDED(hr))
++    if (SUCCEEDED(hr) && start_time > -QUARTZ_TIME_BASE)
+     {
+-        wg_sample->pts = start_time;
++        wg_sample->pts = start_time + QUARTZ_TIME_BASE;
+         wg_sample->flags |= WG_SAMPLE_FLAG_HAS_PTS;
+     }
+-    if (hr == S_OK)
++    if (hr == S_OK && (wg_sample->flags & WG_SAMPLE_FLAG_HAS_PTS))
+     {
+         wg_sample->duration = end_time - start_time;
+         wg_sample->flags |= WG_SAMPLE_FLAG_HAS_DURATION;
+@@ -433,7 +444,7 @@ HRESULT wg_transform_read_quartz(wg_transform_t transform, struct wg_sample *wg_
+ 
+     if (wg_sample->flags & WG_SAMPLE_FLAG_HAS_PTS)
+     {
+-        start_time = wg_sample->pts;
++        start_time = (LONGLONG)wg_sample->pts - QUARTZ_TIME_BASE;
+         if (wg_sample->flags & WG_SAMPLE_FLAG_HAS_DURATION)
+         {
+             end_time = start_time + wg_sample->duration;

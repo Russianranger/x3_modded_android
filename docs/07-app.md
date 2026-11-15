@@ -153,7 +153,9 @@ filters (`winegstreamer.dll`). `patches/wine/` holds fixes for both, found on th
   then the stream accepted nothing else. But it offered upstream filters a fixed 11025 Hz mono
   type with no subtype. Now it offers the format X3 set, then the same in mono (or stereo). It
   also accepts any 16-bit mono or stereo PCM and converts it on the way in: it remixes, and
-  resamples linearly. That covers the 48 kHz menu track and the speech.
+  resamples linearly. That covers the 48 kHz menu track and the speech. It also asks upstream
+  filters for buffers of a tenth of a second: the MP3 decoder sizes its buffers from the
+  connected type, and sent X3's music 16 bytes at a time.
 - **0005, winegstreamer:** the GStreamer splitter's audio output can change sample format but
   cannot resample. It also can't remix mono that has no channel position, which is how
   GStreamer's WMA decoder reports X3's speech. It still accepted any audio format, so the speech
@@ -167,10 +169,18 @@ filters (`winegstreamer.dll`). `patches/wine/` holds fixes for both, found on th
 
   Now the decoders flush on a seek, reset that deadline, and (for video) wait for the next key
   frame.
-
-  **Still open:** GStreamer's MPEG-PS demuxer lands somewhat before the target and gives Wine
-  no timestamps to drop those frames by. So up to about half a second of the previous clip can
-  show before the requested face.
+- **0006, winegstreamer:** frames from before a seek target carry negative times, and the
+  decoders handed those to GStreamer, whose timestamps are unsigned. They came back as times
+  days in the future, and amstream waited for them forever: the face froze after a backward
+  seek, and the window kept showing another pilot. Times now reach GStreamer on a base of
+  10000 seconds. Also, GStreamer's video decoder dropped the next frame whenever amstream
+  reported the last one even slightly late, so faces played at about a third of their frames;
+  lateness under a frame now counts as on time.
+- **0007, winegstreamer:** GStreamer's MPEG-PS demuxer seeks by system clock reference and lands
+  up to a second either side of the target: the end of the previous face showed, or the start
+  of the new one was skipped. When the MPEG-1 splitter plays video only, it now seeks
+  1.5 seconds early, and the MPEG video decoder drops the frames before the target by their
+  (now intact) negative times. Seeks land on the exact frame.
 
 **Building and testing:** CI builds both DLLs (PE side only; `winegstreamer.dll` keeps using the
 runtime's own `winegstreamer.so` from the same source) from the `wine-10.0` tag. It then runs, on
@@ -188,10 +198,12 @@ the runtime's exact Wine build (Kron4ek 10.0 WoW64) with GStreamer, stock DLLs a
   - WMA 2 in ASF (speech);
   - unpositioned mono at 22 kHz into a 44.1 kHz stereo stream (what GStreamer's WMA decoder
     makes of speech; a WAV file, so it runs without the ASF plugin too);
-  - seeking back and forth in one MPEG-1 movie of solid-colour clips (the comms faces). The test
-    first plays the movie to learn where each clip starts. After each seek, every frame must
-    show that clip or the one before it, and no update may stall. Stock Wine shows frames from
-    unrelated clips and then stalls.
+  - seeking back and forth in one MPEG-1 movie (the comms faces): eight one-second clips, each
+    one colour under noise, at a constant 640 kbit/s so that frames span several packs, as in
+    `mov/00001.dat`. The test first plays the movie to learn where each clip starts, and no
+    frame may be lost doing so. After each seek, every frame must show that clip, the first one
+    at the target time, and no update may stall. Stock Wine loses two frames in three, then
+    stalls after the first seek.
 
   All five must pass with the patched DLLs.
 
@@ -549,3 +561,35 @@ can be built the same way (clang, lld, Wine's headers via `widl`, Kron4ek's impo
 - **Sound diagnostics** trace DirectShow only (`quartz`, `strmbase`, `msacm`). They leave out
   per-sample and reference-counting lines, and count what they leave out
   (`wine_log_dropped_lines`).
+
+
+### 15 November 2026, AYN Thor, build 0.1.9
+
+Media diagnostics were on for this run.
+
+**What worked:** the main menu music, sector music, Betty and NPC voices. The filters were
+registered on the first launch (13.5 s, once).
+
+**Problems:**
+
+- **The menu music restarted a couple of times.** X3 reads music two seconds at a time. Each of
+  those reads took seven to nine seconds to fill: the MP3 decoder connected with amstream's PCM
+  type, sized its buffers from it, and sent 16 bytes per sample. That made about 22,000 samples
+  per read. Fixed by 0003's allocator requirements: about 20 samples per read.
+- **The comms face still cycled between pilots.** The log lost the comms part of the session
+  (see below), but a movie built like `mov/00001.dat` showed what happens:
+  - the demuxer landed up to 0.8 s after the target (0007);
+  - after a backward seek, frames with negative times froze the stream (0006);
+  - GStreamer dropped two frames in three for QoS (0006).
+- **Slow loading and play.** X3's main thread ran at 91% of a core for the whole session: X3's
+  own code and DXVK's 32-bit d3d9, both under emulation. The other main costs, each on its own
+  core, were DirectSound's mixer (16%: it resamples X3's 44.1 kHz buffers to the 48 kHz output),
+  the X server and the swapchain thread (16% each), and wineserver (15%). The diagnostics
+  themselves wrote 4.4 GB of trace, almost all of it the 16-byte music samples, so this run's
+  load times (a 179 s pause) are not representative.
+
+**Changes in 0.1.10:**
+
+- Patches 0003 (allocator requirements), 0006 and 0007; the face-seek scenario uses a realistic
+  movie and checks every frame.
+- Verbose logging and media diagnostics now apply to the next launch only.

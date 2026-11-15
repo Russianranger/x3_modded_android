@@ -3,12 +3,13 @@
  *
  *   x3media.exe audio FILE RATE CHANNELS   IAudioMediaStream with a fixed PCM format set before
  *                                          OpenFile (X3: music and speech); prints what arrived.
- *   x3media.exe seek FILE CLIPS            IDirectDrawMediaStream on a movie made of CLIPS solid-colour
- *                                          clips (palette below). Plays it once to learn where each
- *                                          clip starts, then seeks between clips while running (X3:
- *                                          comms faces in mov\00001.dat). Every frame must show the
- *                                          clip, or the clip before it: GStreamer's MPEG-PS demuxer
- *                                          lands early and Wine gets no timestamps to drop by.
+ *   x3media.exe seek FILE CLIPS            IDirectDrawMediaStream on a 25 fps movie made of CLIPS
+ *                                          one-second clips, each one colour (palette below) under
+ *                                          noise. Plays it once to learn where each clip starts (no
+ *                                          frame may be lost there), then seeks between clips while
+ *                                          running, backwards too (X3: comms faces in mov\00001.dat).
+ *                                          Every frame after a seek must show the clip sought, the
+ *                                          first one at the target time, and no update may stall.
  *
  * Exit code 0 when the check passed. One line per result, prefixed "x3media:".
  * Build: i686-w64-mingw32-gcc -municode -O2 -o x3media.exe x3media.c -lole32 -luuid -lstrmiids -lddraw
@@ -187,7 +188,7 @@ static int surface_colour(IDirectDrawSurface *surface, const RECT *rect)
 static int test_seek(const WCHAR *file, int clips)
 {
     static const int order[] = {3, 1, 6, 2, 5, 0, 7, 4, 4, 2};
-    unsigned int i, frames = 0, wrong = 0, early = 0, unsettled = 0, failures = 0;
+    unsigned int i, played, frames = 0, wrong = 0, off_target = 0, failures = 0;
     LONGLONG clip_start[ARRAY_SIZE(palette)];
     IDirectDrawStreamSample *sample;
     IDirectDrawMediaStream *ddraw;
@@ -228,7 +229,8 @@ static int test_seek(const WCHAR *file, int clips)
             clip_start[colour] = start;
         previous = colour;
     }
-    printf("x3media: played %u frames; clips start at", i);
+    played = i;
+    printf("x3media: played %u frames; clips start at", played);
     for (i = 0; i < (unsigned int)clips; ++i)
         printf(" %s %.2f", palette[i].name, clip_start[i] / 1e7);
     printf("\n");
@@ -238,10 +240,17 @@ static int test_seek(const WCHAR *file, int clips)
             printf("x3media: clip %d (%s) never appeared in plain playback\n", i, palette[i].name);
             return 1;
         }
+    /* An application that takes frames as they come must get them all: GStreamer's decoder used to
+     * drop the next frame whenever amstream reported the last one even slightly late. */
+    if (played < (unsigned int)clips * 25 - 3)
+    {
+        printf("x3media: plain playback lost frames: %u of %d\n", played, clips * 25);
+        ++failures;
+    }
 
     for (i = 0; i < ARRAY_SIZE(order); ++i)
     {
-        int clip = order[i] % clips, frame, last_wrong = -1;
+        int clip = order[i] % clips, frame;
         LONGLONG target = clip_start[clip] + 3000000;   /* 0.3 s into the clip, as X3 seeks to a face */
         char line[1024];
         int length;
@@ -262,24 +271,19 @@ static int test_seek(const WCHAR *file, int clips)
             IDirectDrawStreamSample_GetSampleTimes(sample, &start, &end, NULL);
             colour = surface_colour(surface, &rect);
             ++frames;
-            if (colour != clip)
-            {
-                last_wrong = frame;
-                /* GStreamer's MPEG-PS demuxer lands somewhat early, and Wine's MPEG-1 splitter gets
-                 * no timestamps from it to drop those frames by: the end of the previous clip can
-                 * show first. Anything else is a fault. */
-                if (colour == clip - 1) ++early;
-                else ++wrong;
-            }
+            /* GStreamer's MPEG-PS demuxer lands up to a second either side of the target: the
+             * previous face, or the next one, showed. */
+            if (colour != clip) ++wrong;
+            /* The first frame must be the one showing at the target (within a frame). */
+            if (!frame && (start > target || target - start > 400000)) ++off_target;
             length += sprintf(line + length, " %s@%.2f", colour >= 0 ? palette[colour].name : "?", start / 1e7);
         }
-        if (last_wrong == 9) ++unsettled;   /* still on the previous clip after 0.4 s */
         printf("%s\n", line);
     }
-    printf("x3media: seek %ls: %u frames, %u from an unrelated clip, %u from the previous clip (%u seeks never got"
-            " past it in 0.4 s), %u failed updates\n", file, frames, wrong, early, unsettled, failures);
+    printf("x3media: seek %ls: %u frames, %u from another clip, %u seeks starting off the target, "
+            "%u failed updates\n", file, frames, wrong, off_target, failures);
     IAMMultiMediaStream_SetState(mms, STREAMSTATE_STOP);
-    return !frames || wrong || failures;
+    return !frames || wrong || off_target || failures;
 }
 
 int wmain(int argc, WCHAR **argv)

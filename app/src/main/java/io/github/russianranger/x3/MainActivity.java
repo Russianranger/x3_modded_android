@@ -81,8 +81,8 @@ public final class MainActivity extends Activity {
         cpu=spinner(launchCard,Arrays.asList("balanced","fast","fastest","accurate"));
         audio=check(launchCard,"Sound",prefs.getBoolean("audio",true));
         hud=check(launchCard,"DXVK FPS overlay",prefs.getBoolean("dxvk_hud",true));
-        diagnostics=check(launchCard,"Verbose Wine logging (slower)",prefs.getBoolean("diagnostic_logging",false));
-        soundDiagnostics=check(launchCard,"Sound diagnostics in logs",prefs.getBoolean("sound_diagnostics",false));
+        diagnostics=check(launchCard,"Verbose Wine logging, next launch only (slower)",prefs.getBoolean("diagnostic_logging",false));
+        soundDiagnostics=check(launchCard,"Media diagnostics, next launch only (much slower: traces every sound and video call)",prefs.getBoolean("sound_diagnostics",false));
         passthrough=check(launchCard,"Let X3 also read the gamepad itself (XInput). Off: only the app's layered controls reach the game",
             prefs.getBoolean("controller_passthrough",false));
         select(resolution,prefs.getString("resolution","1280x720"));select(renderer,prefs.getString("renderer_label","Turnip + DXVK (Adreno GPU)"));
@@ -155,6 +155,9 @@ public final class MainActivity extends Activity {
                 .put("diagnostic_logging",diagnostics.isChecked()).put("sound_diagnostics",soundDiagnostics.isChecked())
                 .put("controller_passthrough",passthrough.isChecked());
         }catch(org.json.JSONException e){return;}
+        // Diagnostics are for one run: left on, they slow every later game down (one run with media
+        // traces wrote 4.4 GB of log).
+        diagnostics.setChecked(false);soundDiagnostics.setChecked(false);saveOptions();
         operation("Launching",()->{runtime.start(options);operationStatus="Game running";handler.post(()->startActivity(new Intent(this,GameActivity.class)));});
     }
 
