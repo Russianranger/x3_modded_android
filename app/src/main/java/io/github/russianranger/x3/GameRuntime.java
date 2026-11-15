@@ -106,7 +106,7 @@ final class GameRuntime {
                 .put("turnip_driver",options.optString("turnip_driver","24.3.4"))
                 .put("presentation_mode","rfb").put("display_fps",options.optInt("display_fps",60))
                 .put("audio",options.optBoolean("audio",true)).put("dxvk_hud",options.optBoolean("dxvk_hud",true))
-                .put("cpu_profile",options.optString("cpu_profile","balanced")).put("cpu_affinity","available")
+                .put("cpu_profile",options.optString("cpu_profile","fast")).put("cpu_affinity","available")
                 .put("runtime_mode",options.optString("runtime_mode","auto"))
                 .put("diagnostic_logging",options.optBoolean("diagnostic_logging",false))
                 .put("sound_diagnostics",options.optBoolean("sound_diagnostics",false))

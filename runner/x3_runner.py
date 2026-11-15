@@ -136,7 +136,7 @@ CPU_PROFILES = {
                 'BOX64_DYNAREC_SAFEFLAGS': '1', 'BOX64_DYNAREC_STRONGMEM': '0'},
     'accurate': {'BOX64_DYNAREC_BIGBLOCK': '2', 'BOX64_DYNAREC_SAFEFLAGS': '1', 'BOX64_DYNAREC_STRONGMEM': '1'},
 }
-DEFAULT_CPU_PROFILE = 'balanced'
+DEFAULT_CPU_PROFILE = 'fast'     # tenth Thor run: loads 146 s against 183 s, 32 fps against 24
 PRESENT_PAUSE = 5.0        # seconds without a Vulkan present that count as a loading pause
 SPIN_SAMPLES = 6           # 10 s samples of a busy game main thread with no kernel work: stuck
 
@@ -168,6 +168,64 @@ class SpinWatch:
             self.count = self.count + 1 if busy and now[1:] == self.last[1:] else 0
         self.last = now
         return self.count >= self.samples
+
+
+# Native arm64 numbers: Box64 makes the game's system calls itself. Only the ones a load or a
+# frame plausibly spends time in; others are reported by number.
+ARM64_SYSCALLS = {
+    17: 'getcwd', 22: 'epoll_pwait', 23: 'dup', 25: 'fcntl', 29: 'ioctl', 35: 'unlinkat',
+    43: 'statfs', 44: 'fstatfs', 48: 'faccessat', 56: 'openat', 57: 'close', 61: 'getdents64',
+    62: 'lseek', 63: 'read', 64: 'write', 65: 'readv', 66: 'writev', 67: 'pread64', 68: 'pwrite64',
+    73: 'ppoll', 78: 'readlinkat', 79: 'newfstatat', 80: 'fstat', 98: 'futex', 101: 'nanosleep',
+    113: 'clock_gettime', 124: 'sched_yield', 129: 'kill', 131: 'tgkill', 134: 'rt_sigaction',
+    135: 'rt_sigprocmask', 139: 'rt_sigreturn', 172: 'getpid', 178: 'gettid', 203: 'connect',
+    207: 'recvfrom', 211: 'sendmsg', 212: 'recvmsg', 215: 'munmap', 222: 'mmap', 226: 'mprotect',
+    233: 'madvise', 260: 'wait4', 278: 'getrandom', 291: 'statx', 439: 'faccessat2'}
+THREAD_STATES = {'R': 'running', 'S': 'sleeping', 'D': 'disk', 't': 'traced', 'T': 'stopped'}
+
+
+class MainThreadProfile:
+    """X3 addition: what the game's main thread is doing, 20 times a second, loading and playing apart.
+
+    The 10 s thread samples showed the main thread 10-23 % in the kernel during the tenth Thor
+    run's 146 s loads, sometimes stopped by PRoot (state t, wchan ptrace_stop). This says how much
+    of a load goes to PRoot ('traced'), to waiting on wineserver ('sleeping' in read) and to the
+    game's own work ('running'), and which system calls are behind each.
+    """
+    def __init__(self, proc=Path('/proc')):
+        self.proc, self.pid = proc, None
+        self.lock = threading.Lock()
+        self.states = {'loading': {}, 'playing': {}}
+        self.calls = {'loading': {}, 'playing': {}}
+
+    def sample(self, phase):
+        if self.pid is None: return
+        task = self.proc / str(self.pid) / 'task' / str(self.pid)
+        try:
+            stat = (task / 'stat').read_text()
+            state = THREAD_STATES.get(stat[stat.rindex(')') + 2], 'other')
+        except (OSError, ValueError, IndexError): return
+        try: call = (task / 'syscall').read_text().split(maxsplit=1)[0]
+        except (OSError, IndexError): call = ''
+        with self.lock:
+            states = self.states[phase]
+            states[state] = states.get(state, 0) + 1
+            if call.isdecimal():
+                key = state + ':' + ARM64_SYSCALLS.get(int(call), call)
+                self.calls[phase][key] = self.calls[phase].get(key, 0) + 1
+
+    def report(self):
+        """Shares of samples per phase: states, then the eight commonest state:syscall pairs."""
+        out = {}
+        with self.lock:
+            for phase, states in self.states.items():
+                total = sum(states.values())
+                if not total: continue
+                calls = sorted(self.calls[phase].items(), key=lambda item: -item[1])[:8]
+                out[phase] = {'samples': total,
+                              **{state: round(count / total, 3) for state, count in sorted(states.items(), key=lambda item: -item[1])},
+                              'syscalls': {key: round(count / total, 3) for key, count in calls}}
+        return out
 
 
 GAME_START_GRACE = 150     # seconds after launch before a missing game process is reported
@@ -233,6 +291,7 @@ class WineLog:
         self.trace = ''
         self.fps_streams = set()
         self.last_present = None
+        self.last_present_seen = None   # time.monotonic() when the last present line arrived
 
     def observe(self, chunk):
         self.pending += chunk
@@ -264,6 +323,7 @@ class WineLog:
                         del pauses[:-12]
                         self.fields['longest_present_pause_seconds'] = max(pauses + [self.fields.get('longest_present_pause_seconds', 0)])
                     self.last_present = now
+                    self.last_present_seen = time.monotonic()
                 if fps:
                     stream = fps[1].lower() + ':' + fps[2].lower()
                     if stream in self.fps_streams and 0 <= float(fps[3]) <= 10000:
@@ -528,6 +588,7 @@ class Supervisor:
         self.log_thread = None
         self.last_thread_sample = 0
         self.spin = SpinWatch()
+        self.profile = MainThreadProfile()
         self.launch_token = secrets.token_hex(16)
         self.started_monotonic = time.monotonic()
         self.game_name = PurePosixPath(request.get('program', 'X3AP.exe')).name
@@ -775,6 +836,7 @@ class Supervisor:
         self.update('launch_requested', launcher_pid=launcher.pid, command=args[2:])
         launched, absent = time.monotonic(), 0
         watch_game = self.request.get('mode') == 'game' or PurePosixPath(self.game_name).suffix.lower() == '.exe'
+        threading.Thread(target=self.profile_main_thread, daemon=True).start()
         while not self.stopping():
             if xserver.poll() is not None: raise RuntimeError('Display exited; see x3-display.log')
             observed, fatal = self.wine_log.snapshot()
@@ -785,6 +847,8 @@ class Supervisor:
                 sample = self.sample_threads(launcher.pid)
                 self.read_pin_report()
                 self.watch_spin(sample, interval)
+                profile = self.profile.report()
+                if profile: self.status['main_thread_profile'] = profile
                 self.status['thread_sample'] = {k: v for k, v in sample.items() if k != 'threads'}
                 self.status['thread_sample']['thread_count'] = len(sample['threads'])
                 if sample.get('game_running'):
@@ -824,9 +888,17 @@ class Supervisor:
         summary = X3PIN_SUMMARY.findall(text)
         if summary: self.status['crypto_pin'] = '%s/%s (%s)' % summary[-1]
 
+    def profile_main_thread(self):
+        """Sample the game's main thread at 20 Hz; a load is any time Wine has not presented for 4 s."""
+        while not self.stopping():
+            seen = self.wine_log.last_present_seen if self.wine_log else None
+            self.profile.sample('playing' if seen is not None and time.monotonic() - seen < 4 else 'loading')
+            time.sleep(0.05)
+
     def watch_spin(self, sample, seconds):
         main = [t for t in sample['threads']
                 if t['tid'] == t['pid'] and t['name'].lower() == self.game_name[:15].lower()]
+        if main: self.profile.pid = main[0]['pid']
         if main and self.spin.observe(main[0], seconds) and 'warning' not in self.status:
             profile = self.request.get('cpu_profile', DEFAULT_CPU_PROFILE)
             self.status['main_thread_spinning'] = True

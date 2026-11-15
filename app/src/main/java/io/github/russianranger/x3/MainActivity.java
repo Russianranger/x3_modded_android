@@ -77,8 +77,8 @@ public final class MainActivity extends Activity {
         label(launchCard,"Graphics");renderer=spinner(launchCard,Arrays.asList("Turnip + DXVK (Adreno GPU)","Software (WineD3D, slow)"));
         label(launchCard,"Turnip driver");turnip=spinner(launchCard,Arrays.asList("24.3.4","26.0.0"));
         label(launchCard,"Display updates per second");fps=spinner(launchCard,Arrays.asList("60","30"));
-        label(launchCard,"CPU emulation (fast and fastest are experiments: back to balanced if X3 hangs)");
-        cpu=spinner(launchCard,Arrays.asList("balanced","fast","fastest","accurate"));
+        label(launchCard,"CPU emulation (fast is the default; fastest is an experiment: back to fast if X3 hangs, balanced if fast does)");
+        cpu=spinner(launchCard,Arrays.asList("fast","fastest","balanced","accurate"));
         audio=check(launchCard,"Sound",prefs.getBoolean("audio",true));
         hud=check(launchCard,"DXVK FPS overlay",prefs.getBoolean("dxvk_hud",true));
         diagnostics=check(launchCard,"Verbose Wine logging, next launch only (slower)",prefs.getBoolean("diagnostic_logging",false));
@@ -86,7 +86,7 @@ public final class MainActivity extends Activity {
         passthrough=check(launchCard,"Let X3 also read the gamepad itself (XInput). Off: only the app's layered controls reach the game",
             prefs.getBoolean("controller_passthrough",false));
         select(resolution,prefs.getString("resolution","1280x720"));select(renderer,prefs.getString("renderer_label","Turnip + DXVK (Adreno GPU)"));
-        select(turnip,prefs.getString("turnip_driver","24.3.4"));select(fps,prefs.getString("display_fps","60"));select(cpu,prefs.getString("cpu_profile_v3","balanced"));
+        select(turnip,prefs.getString("turnip_driver","24.3.4"));select(fps,prefs.getString("display_fps","60"));select(cpu,prefs.getString("cpu_profile_v3","fast"));
         LinearLayout launchRow=row(launchCard);
         button(launchRow,"Launch",v->launch());
         button(launchRow,"Show game",v->{if(runtime.alive())startActivity(new Intent(this,GameActivity.class));else Toast.makeText(this,"The game is not running",Toast.LENGTH_SHORT).show();});

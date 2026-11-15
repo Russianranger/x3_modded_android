@@ -63,17 +63,18 @@ PRoot rootfs (TRASC client runtime)
      whether the exe is Large Address Aware.
 4. Launch the game:
    - Pick `X3AP.exe` and a resolution, then tap **Launch**.
-   - The defaults are Turnip 24.3.4, the **balanced** CPU profile, `-skipintro` and a 1280×720
+   - The defaults are Turnip 24.3.4, the **fast** CPU profile, `-skipintro` and a 1280×720
      Wine desktop.
    - The first launch creates the Wine prefix, so it takes longer than later ones.
    - **CPU emulation** sets Box64's code translator for X3AP.exe only:
-     - **balanced** (default): the settings every Thor run since 0.1.1 has used.
-     - **fast** (experiment): bigger translated blocks that also cover Windows code, and direct
-       call/return. Flag handling and code-change detection stay as in balanced.
+     - **fast** (default since 0.1.11): bigger translated blocks that also cover Windows code,
+       and direct call/return. Flag handling and code-change detection stay as in balanced. On
+       the Thor, loads took 146 s against balanced's 183 s, and flight ran at 32 fps against 24.
      - **fastest** (experiment): fast without the x86 memory-ordering barriers.
+     - **balanced**: the settings the Thor runs up to 0.1.9 used.
      - **accurate**: balanced plus exact x87 and rounding.
 
-     If X3 hangs on fast or fastest, go back to balanced. The runner warns when X3's main thread
+     If X3 hangs on fastest, go back to fast; on fast, to balanced. The runner warns when X3's main thread
      has used a full core for a minute without any system call or page fault, which is what the
      0.1.7 hang looked like.
    - The in-game status line shows **last load N s**: the last stretch without a frame, taken from
@@ -180,7 +181,10 @@ filters (`winegstreamer.dll`). `patches/wine/` holds fixes for both, found on th
   up to a second either side of the target: the end of the previous face showed, or the start
   of the new one was skipped. When the MPEG-1 splitter plays video only, it now seeks
   1.5 seconds early, and the MPEG video decoder drops the frames before the target by their
-  (now intact) negative times. Seeks land on the exact frame.
+  (now intact) negative times. Seeks land on the exact frame. That covers a seek on a running
+  or paused movie and, since 0.1.11, the one that matters for X3: it stops the face movie,
+  seeks, and runs it again, and the seek to the start position then happened without the
+  preroll, landing on another pilot.
 
 **Building and testing:** CI builds both DLLs (PE side only; `winegstreamer.dll` keeps using the
 runtime's own `winegstreamer.so` from the same source) from the `wine-10.0` tag. It then runs, on
@@ -201,9 +205,11 @@ the runtime's exact Wine build (Kron4ek 10.0 WoW64) with GStreamer, stock DLLs a
   - seeking back and forth in one MPEG-1 movie (the comms faces): eight one-second clips, each
     one colour under noise, at a constant 640 kbit/s so that frames span several packs, as in
     `mov/00001.dat`. The test first plays the movie to learn where each clip starts, and no
-    frame may be lost doing so. After each seek, every frame must show that clip, the first one
-    at the target time, and no update may stall. Stock Wine loses two frames in three, then
-    stalls after the first seek.
+    frame may be lost doing so. Then it seeks in turn while the movie runs, after pausing it,
+    and after stopping it (X3's way), backwards too. After each seek, every frame must show that
+    clip, the first one at the target time, and no update may stall. Stock Wine loses two frames
+    in three, then stalls after the first seek; 0.1.10's DLLs showed the wrong clip after every
+    stopped seek.
 
   All five must pass with the patched DLLs.
 
@@ -593,3 +599,32 @@ registered on the first launch (13.5 s, once).
 - Patches 0003 (allocator requirements), 0006 and 0007; the face-seek scenario uses a realistic
   movie and checks every frame.
 - Verbose logging and media diagnostics now apply to the next launch only.
+
+
+### 15 November 2026, AYN Thor, build 0.1.10 (CPU profile fast)
+
+**What worked:** audio throughout. Loading felt faster: the two game loads took 146 s each,
+against 183 s and 180 s in the two earlier runs on the balanced profile. In flight the median
+was 32 frames per second, against 24 and 29.
+
+**Problems:**
+
+- **The comms window was still wrong.** The run had no media traces, but the previous run's
+  showed X3's pattern: it stops a movie (or pauses it), seeks, then runs it. 0007 only moved
+  seeks on a running or paused movie. On a stopped one, the splitter seeks when streaming
+  starts, and that seek went to the plain target. `x3media.exe`, extended to seek all three
+  ways, showed 0.1.10's DLLs landing on the wrong clip after every stopped seek (white sought,
+  black shown).
+- **Performance.** X3's main thread ran at 95% of a core in flight and about 86% while
+  loading, of which 10–23% was kernel time. In 3 of 32 samples taken during loads, it was
+  stopped by PRoot. Nothing else was near a full core: the swapchain thread 28%, the X server
+  23%, DirectSound's mixer 17%.
+
+**Changes in 0.1.11:**
+
+- 0007 also moves the seek made when streaming starts, and the MPEG video decoder drops frames
+  from before the start position after a start as well as after a flush.
+- `fast` is the default CPU profile.
+- `main_thread_profile` in `x3-state.json`: the game's main thread sampled 20 times a second,
+  shares of running, waiting and stopped by PRoot, and the commonest system calls, kept apart
+  for loading (no frame presented for 4 s) and playing.

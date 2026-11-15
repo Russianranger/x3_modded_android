@@ -333,7 +333,8 @@ class LoadTimeTests(unittest.TestCase):
         self.assertIn("BOX64_DYNAREC_BIGBLOCK=2\nBOX64_DYNAREC_SAFEFLAGS=1\nBOX64_DYNAREC_STRONGMEM=1\n",
                       x3_runner.box64_rc("X3AP.exe", "balanced"))
         self.assertTrue(x3_runner.box64_rc("x3 ap;rm.exe", "fast").count("[x3aprm.exe]") == 1)
-        self.assertEqual(x3_runner.DEFAULT_CPU_PROFILE, "balanced")
+        # Tenth Thor run: fast loaded in 146 s against balanced's 183 s and played at 32 fps against 24.
+        self.assertEqual(x3_runner.DEFAULT_CPU_PROFILE, "fast")
 
     def test_spinning_main_thread_is_noticed(self):
         # The 0.1.7 hang: +1013 user ticks per 10 s, system ticks and faults frozen.
@@ -363,6 +364,40 @@ class LoadTimeTests(unittest.TestCase):
         match = x3_runner.X3PIN_SUMMARY.search("x3pin: 3 of 3 DLLs pinned (program idle)\n")
         self.assertEqual(match.groups(), ("3", "3", "program idle"))
         self.assertTrue(x3_runner.X3PIN_LOG.name == "x3pin.log")
+
+class MainThreadProfileTests(unittest.TestCase):
+    def task(self, root, state, syscall):
+        task = root / "4242" / "task" / "4242"
+        task.mkdir(parents=True, exist_ok=True)
+        (task / "stat").write_text(f"4242 (X3AP.exe) {state} 1 2 3 4 5\n")
+        (task / "syscall").write_text(syscall + "\n")
+
+    def test_states_and_syscalls_are_shared_out_by_phase(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            profile = x3_runner.MainThreadProfile(proc=root)
+            profile.sample("loading")           # no game thread known yet: nothing counted
+            self.assertEqual(profile.report(), {})
+            profile.pid = 4242
+            for state, call in [("R", "running"), ("R", "running"), ("t", "56 0x1 0x2"), ("S", "63 0x5")]:
+                self.task(root, state, call)
+                profile.sample("loading")
+            self.task(root, "R", "running")
+            profile.sample("playing")
+            report = profile.report()
+            self.assertEqual(report["loading"]["samples"], 4)
+            self.assertEqual(report["loading"]["running"], 0.5)
+            self.assertEqual(report["loading"]["traced"], 0.25)
+            self.assertEqual(report["loading"]["syscalls"], {"traced:openat": 0.25, "sleeping:read": 0.25})
+            self.assertEqual(report["playing"], {"samples": 1, "running": 1.0, "syscalls": {}})
+
+    def test_a_thread_that_went_away_is_skipped(self):
+        with tempfile.TemporaryDirectory() as folder:
+            profile = x3_runner.MainThreadProfile(proc=Path(folder))
+            profile.pid = 999
+            profile.sample("playing")
+            self.assertEqual(profile.report(), {})
+
 
 class MediaRunEightTests(unittest.TestCase):
     """Eighth Thor run (0.1.8): no speech, no menu music, comms faces from other pilots."""

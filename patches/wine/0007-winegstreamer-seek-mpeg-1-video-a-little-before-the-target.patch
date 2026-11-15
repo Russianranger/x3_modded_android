@@ -3,24 +3,59 @@ Subject: [PATCH] winegstreamer: Seek MPEG-1 video a little before the target.
 
 GStreamer's MPEG-PS demuxer seeks by system clock reference and lands up to a second either side
 of the target. X3: Albion Prelude keeps every comms face in one MPEG-1 movie and seeks between
-them, so it showed the end of the previous face, or skipped the start of the new one. When the
-MPEG-1 splitter plays video only, seek 1.5 seconds early (a GOP plus the landing error); samples
-keep their times relative to the target, and the MPEG video decoder drops what comes before it
-(see the previous patches).
+them, so it showed the end of the previous face, or skipped the start of the new one, or (it
+stops the movie, seeks and runs it again) a different pilot altogether. When the MPEG-1 splitter
+plays video only, seek 1.5 seconds early (a GOP plus the landing error): both on a seek while
+running or paused, and on the seek to the start position when streaming starts. Samples keep
+their times relative to the target, and the MPEG video decoder drops what comes before it, after
+a flush (previous patches) and now also after a start.
 ---
 diff --git a/dlls/winegstreamer/quartz_parser.c b/dlls/winegstreamer/quartz_parser.c
-index a0c99a8..fe279ad 100644
+index a0c99a8..8d52667 100644
 --- a/dlls/winegstreamer/quartz_parser.c
 +++ b/dlls/winegstreamer/quartz_parser.c
-@@ -1897,11 +1897,15 @@ static ULONG WINAPI GST_Seeking_Release(IMediaSeeking *iface)
-     return IPin_Release(&This->pin.pin.IPin_iface);
+@@ -1452,6 +1452,28 @@ static void parser_destroy(struct strmbase_filter *iface)
+     free(filter);
  }
  
-+/* 1.5 seconds: a GOP and the demuxer's landing error. */
-+#define MPEG_VIDEO_SEEK_PREROLL 15000000
++/* GStreamer's MPEG-PS demuxer seeks by system clock reference, so it lands up to a second either
++ * side of the target, and then video starts there: X3: Albion Prelude keeps every comms face in
++ * one movie, and showed the end of the previous face or skipped the start of the new one. Seek
++ * a little earlier instead (1.5 seconds: a GOP and the landing error); samples keep their times
++ * relative to the target, and the MPEG video decoder decodes but drops the frames before it.
++ * Only when video is all that plays: an audio decoder would play what came before the target. */
++static LONGLONG parser_seek_start(struct parser *filter, struct parser_source *pin, LONGLONG target)
++{
++    unsigned int i;
 +
- static HRESULT WINAPI GST_Seeking_SetPositions(IMediaSeeking *iface,
-         LONGLONG *current, DWORD current_flags, LONGLONG *stop, DWORD stop_flags)
++    if (!IsEqualGUID(&filter->filter.clsid, &CLSID_MPEG1Splitter) || target <= 0
++            || !pin->pin.pin.peer || !IsEqualGUID(&pin->pin.pin.mt.majortype, &MEDIATYPE_Video))
++        return target;
++    for (i = 0; i < filter->source_count; ++i)
++    {
++        if (filter->sources[i] != pin && filter->sources[i]->pin.pin.peer)
++            return target;
++    }
++    TRACE("Seeking to %s for a target of %s.\n", debugstr_time(max(target - 15000000, 0)), debugstr_time(target));
++    return max(target - 15000000, 0);
++}
++
+ static HRESULT parser_init_stream(struct strmbase_filter *iface)
+ {
+     struct parser *filter = impl_from_strmbase_filter(iface);
+@@ -1488,8 +1510,10 @@ static HRESULT parser_init_stream(struct strmbase_filter *iface)
+     seeking = &filter->sources[0]->seek;
+     if (seeking->llStop)
+         stop_flags = AM_SEEKING_AbsolutePositioning;
++    /* X3 stops its comms face movie, seeks, and runs it again: this is the seek that counts. */
+     wg_parser_stream_seek(filter->sources[0]->wg_stream, seeking->dRate,
+-            seeking->llCurrent, seeking->llStop, AM_SEEKING_AbsolutePositioning, stop_flags);
++            parser_seek_start(filter, filter->sources[0], seeking->llCurrent), seeking->llStop,
++            AM_SEEKING_AbsolutePositioning, stop_flags);
+ 
+     for (i = 0; i < filter->source_count; ++i)
+     {
+@@ -1902,6 +1926,7 @@ static HRESULT WINAPI GST_Seeking_SetPositions(IMediaSeeking *iface,
  {
      struct parser_source *pin = impl_from_IMediaSeeking(iface);
      struct parser *filter = impl_from_strmbase_filter(pin->pin.pin.filter);
@@ -28,29 +63,11 @@ index a0c99a8..fe279ad 100644
      int i;
  
      TRACE("pin %p, current %s, current_flags %#lx, stop %s, stop_flags %#lx.\n",
-@@ -1943,8 +1947,28 @@ static HRESULT WINAPI GST_Seeking_SetPositions(IMediaSeeking *iface,
+@@ -1943,8 +1968,10 @@ static HRESULT WINAPI GST_Seeking_SetPositions(IMediaSeeking *iface,
  
      SourceSeekingImpl_SetPositions(iface, current, current_flags, stop, stop_flags);
  
-+    start = pin->seek.llCurrent;
-+    /* GStreamer's MPEG-PS demuxer seeks by system clock reference, so it lands up to a second
-+     * either side of the target, and then video starts there: X3: Albion Prelude keeps every
-+     * comms face in one movie, and showed the end of the previous face or skipped the start of
-+     * the new one. Seek a little earlier instead; samples keep their times relative to the
-+     * target, and the MPEG video decoder decodes but drops the frames before it. Only when video
-+     * is all that plays: an audio decoder would play what came before the target. */
-+    for (i = 0; i < filter->source_count; ++i)
-+    {
-+        if (filter->sources[i] != pin && filter->sources[i]->pin.pin.peer)
-+            break;
-+    }
-+    if (IsEqualGUID(&filter->filter.clsid, &CLSID_MPEG1Splitter) && i == filter->source_count
-+            && IsEqualGUID(&pin->pin.pin.mt.majortype, &MEDIATYPE_Video)
-+            && (current_flags & AM_SEEKING_PositioningBitsMask) && start > 0)
-+    {
-+        start = max(start - MPEG_VIDEO_SEEK_PREROLL, 0);
-+        TRACE("Seeking to %s for a target of %s.\n", debugstr_time(start), debugstr_time(pin->seek.llCurrent));
-+    }
++    start = parser_seek_start(filter, pin, pin->seek.llCurrent);
 +
      wg_parser_stream_seek(pin->wg_stream, pin->seek.dRate,
 -            pin->seek.llCurrent, pin->seek.llStop, current_flags, stop_flags);
@@ -58,3 +75,20 @@ index a0c99a8..fe279ad 100644
  
      if (!(current_flags & AM_SEEKING_NoFlush))
      {
+diff --git a/dlls/winegstreamer/quartz_transform.c b/dlls/winegstreamer/quartz_transform.c
+index 77a3963..f2408c4 100644
+--- a/dlls/winegstreamer/quartz_transform.c
++++ b/dlls/winegstreamer/quartz_transform.c
+@@ -122,8 +122,11 @@ static HRESULT transform_init_stream(struct strmbase_filter *iface)
+             filter->sample_queue = NULL;
+             return hr;
+         }
+-        filter->seen_sync_point = filter->need_sync_point = filter->after_flush = FALSE;
++        filter->seen_sync_point = filter->need_sync_point = FALSE;
+         filter->skipped = 0;
++        /* A splitter also starts streaming early, from before the start position (see
++         * parser_seek_start()), and stamps what comes before it with negative times. */
++        filter->after_flush = IsEqualGUID(&filter->sink.pin.mt.majortype, &MEDIATYPE_Video);
+ 
+         hr = IMemAllocator_Commit(filter->source.pAllocator);
+         if (FAILED(hr))

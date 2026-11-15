@@ -7,7 +7,8 @@
  *                                          one-second clips, each one colour (palette below) under
  *                                          noise. Plays it once to learn where each clip starts (no
  *                                          frame may be lost there), then seeks between clips while
- *                                          running, backwards too (X3: comms faces in mov\00001.dat).
+ *                                          running, paused and stopped as X3 does, backwards too
+ *                                          (X3: comms faces in mov\00001.dat).
  *                                          Every frame after a seek must show the clip sought, the
  *                                          first one at the target time, and no update may stall.
  *
@@ -26,6 +27,7 @@
 #include <austream.h>
 #include <ddstream.h>
 #include <strmif.h>
+#include <control.h>
 #include <limits.h>
 
 #ifndef ARRAY_SIZE
@@ -41,6 +43,7 @@ static const GUID iid_audio_media_stream = {0xf7537560, 0xa3be, 0x11d0, {0x82, 0
 static const GUID iid_audio_data = {0x54c719c0, 0xaf60, 0x11d0, {0x82, 0x12, 0x00, 0xc0, 0x4f, 0xc3, 0x2c, 0x45}};
 static const GUID iid_ddraw_media_stream = {0xf4104fce, 0x9a70, 0x11d0, {0x8f, 0xde, 0x00, 0xc0, 0x4f, 0xd9, 0x18, 0x9d}};
 static const GUID iid_media_seeking = {0x36b73880, 0xc2c8, 0x11cf, {0x8b, 0x46, 0x00, 0x80, 0x5f, 0x6c, 0xef, 0x60}};
+static const GUID iid_media_control = {0x56a868b1, 0x0ad4, 0x11ce, {0xb0, 0x3a, 0x00, 0x20, 0xaf, 0x0b, 0xa7, 0x70}};
 
 /* ffmpeg's colour names, in clip order (tests/media/fixtures/README.md). */
 static const struct { const char *name; int r, g, b; } palette[] =
@@ -187,13 +190,15 @@ static int surface_colour(IDirectDrawSurface *surface, const RECT *rect)
 
 static int test_seek(const WCHAR *file, int clips)
 {
-    static const int order[] = {3, 1, 6, 2, 5, 0, 7, 4, 4, 2};
+    static const int order[] = {3, 1, 6, 2, 5, 0, 7, 4, 4, 2, 6, 1};
     unsigned int i, played, frames = 0, wrong = 0, off_target = 0, failures = 0;
     LONGLONG clip_start[ARRAY_SIZE(palette)];
     IDirectDrawStreamSample *sample;
     IDirectDrawMediaStream *ddraw;
     IDirectDrawSurface *surface;
     IMediaSeeking *seeking;
+    IMediaControl *control;
+    static const char *const ways[] = {"running", "paused", "stopped"};
     IGraphBuilder *graph;
     IMediaStream *stream;
     IAMMultiMediaStream *mms;
@@ -215,6 +220,7 @@ static int test_seek(const WCHAR *file, int clips)
     IDirectDrawStreamSample_GetSurface(sample, &surface, &rect);
     IAMMultiMediaStream_GetFilterGraph(mms, &graph);
     IGraphBuilder_QueryInterface(graph, &iid_media_seeking, (void **)&seeking);
+    IGraphBuilder_QueryInterface(graph, &iid_media_control, (void **)&control);
     IAMMultiMediaStream_SetState(mms, STREAMSTATE_RUN);
 
     /* Where each clip starts when the movie simply plays: seeking there must show the same. */
@@ -255,8 +261,13 @@ static int test_seek(const WCHAR *file, int clips)
         char line[1024];
         int length;
 
+        /* X3 pauses or stops the graph, seeks, and runs it again; seeking a running graph too. */
+        if (i % 3 == 1) IMediaControl_Pause(control);
+        if (i % 3 == 2) IMediaControl_Stop(control);
         hr = IMediaSeeking_SetPositions(seeking, &target, AM_SEEKING_AbsolutePositioning, NULL, AM_SEEKING_NoPositioning);
-        length = sprintf(line, "x3media: seek to %.2f in clip %d (%s), hr %#lx, frames:", target / 1e7, clip, palette[clip].name, hr);
+        if (i % 3) IMediaControl_Run(control);
+        length = sprintf(line, "x3media: seek %s to %.2f in clip %d (%s), hr %#lx, frames:", ways[i % 3],
+                target / 1e7, clip, palette[clip].name, hr);
         for (frame = 0; frame < 10; ++frame)    /* 0.4 s: all inside the clip */
         {
             STREAM_TIME start = 0, end = 0;
