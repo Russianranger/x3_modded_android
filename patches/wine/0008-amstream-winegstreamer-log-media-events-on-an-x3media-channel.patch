@@ -1,0 +1,325 @@
+From: X3 Modded <noreply@github.com>
+Subject: [PATCH] amstream, winegstreamer: Log media events on an x3media channel.
+
+Not for upstream. X3: Albion Prelude's comms faces went wrong in every run without media traces,
+and the full quartz traces are far too heavy to leave on (one run wrote 4.4 GB). This channel
+logs what the application asks for and what comes back, at a few lines per seek: files opened,
+stream and filter state changes, seeks (target, flags, state), the splitter's new segments and
+video preroll, the first samples after each segment, the video decoder's drops after a flush,
+the formats and samples the application sets up, and the first frames and updates after each
+segment, flush or state change, then counts. Enable with WINEDEBUG=+x3media.
+---
+diff --git a/dlls/amstream/ddrawstream.c b/dlls/amstream/ddrawstream.c
+index c7cb52c..9495fa1 100644
+--- a/dlls/amstream/ddrawstream.c
++++ b/dlls/amstream/ddrawstream.c
+@@ -25,6 +25,7 @@
+ #include "wine/strmbase.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(quartz);
++WINE_DECLARE_DEBUG_CHANNEL(x3media);
+ 
+ static const WCHAR sink_id[] = L"I{A35FF56A-9FDA-11D0-8FDF-00C04FD9189D}";
+ 
+@@ -63,6 +64,10 @@ struct ddraw_stream
+     BOOL flushing;
+     CONDITION_VARIABLE update_queued_cv;
+     struct list update_queue;
++
++    /* x3media log: frames and updates are logged individually only just after a new segment,
++     * a flush or a state change, then counted. */
++    unsigned int log_frames, log_updates, frames, updates;
+ };
+ 
+ struct ddraw_sample
+@@ -463,6 +468,11 @@ static HRESULT WINAPI ddraw_IAMMediaStream_SetState(IAMMediaStream *iface, FILTE
+     if (stream->state == State_Stopped)
+         stream->eos = FALSE;
+ 
++    if (stream->state != state)
++    {
++        TRACE_(x3media)("ddraw %p state %u after %u frames, %u updates.\n", stream, state, stream->frames, stream->updates);
++        stream->log_frames = stream->log_updates = 4;
++    }
+     stream->state = state;
+ 
+     LeaveCriticalSection(&stream->cs);
+@@ -650,6 +660,11 @@ static HRESULT WINAPI ddraw_IDirectDrawMediaStream_SetFormat(IDirectDrawMediaStr
+     HRESULT hr;
+ 
+     TRACE("stream %p, format %p, palette %p.\n", stream, format, palette);
++    if (format && format->dwSize == sizeof(DDSURFACEDESC))
++        TRACE_(x3media)("ddraw %p format: flags %#lx, %lux%lu, pixel format flags %#lx, %lu bpp, masks %#lx %#lx %#lx.\n",
++                stream, format->dwFlags, format->dwWidth, format->dwHeight, format->ddpfPixelFormat.dwFlags,
++                format->ddpfPixelFormat.dwRGBBitCount, format->ddpfPixelFormat.dwRBitMask,
++                format->ddpfPixelFormat.dwGBitMask, format->ddpfPixelFormat.dwBBitMask);
+ 
+     if (palette)
+         FIXME("Setting palette is not yet supported.\n");
+@@ -853,6 +868,8 @@ static HRESULT WINAPI ddraw_IDirectDrawMediaStream_CreateSample(IDirectDrawMedia
+ 
+     TRACE("stream %p, surface %p, rect %s, flags %#lx, sample %p.\n",
+             stream, surface, wine_dbgstr_rect(rect), flags, sample);
++    TRACE_(x3media)("ddraw %p creates a sample: surface %p, rect %s, flags %#lx.\n",
++            stream, surface, wine_dbgstr_rect(rect), flags);
+ 
+     if (!surface && rect)
+         return E_INVALIDARG;
+@@ -1320,6 +1337,7 @@ static HRESULT WINAPI ddraw_sink_EndOfStream(IPin *iface)
+     }
+ 
+     stream->eos = TRUE;
++    TRACE_(x3media)("ddraw %p end of stream after %u frames, %u updates.\n", stream, stream->frames, stream->updates);
+ 
+     flush_update_queue(stream, MS_S_ENDOFSTREAM);
+ 
+@@ -1343,6 +1361,8 @@ static HRESULT WINAPI ddraw_sink_BeginFlush(IPin *iface)
+     EnterCriticalSection(&stream->cs);
+ 
+     cancel_eos = stream->eos;
++    TRACE_(x3media)("ddraw %p flushes after %u frames, %u updates.\n", stream, stream->frames, stream->updates);
++    stream->log_frames = stream->log_updates = 4;
+ 
+     stream->flushing = TRUE;
+     stream->eos = FALSE;
+@@ -1383,6 +1403,8 @@ static HRESULT WINAPI ddraw_sink_NewSegment(IPin *iface, REFERENCE_TIME start, R
+     EnterCriticalSection(&stream->cs);
+ 
+     stream->segment_start = start;
++    TRACE_(x3media)("ddraw %p new segment from %s.\n", stream, debugstr_time(start));
++    stream->log_frames = stream->log_updates = 4;
+ 
+     LeaveCriticalSection(&stream->cs);
+ 
+@@ -1557,6 +1579,17 @@ static HRESULT WINAPI ddraw_meminput_Receive(IMemInputPin *iface, IMediaSample *
+ 
+             sample->update_hr = process_update(sample, top_down_stride, top_down_pointer,
+                     &stream->mt, start_stream_time, end_stream_time);
++            ++stream->frames;
++            if (stream->log_frames)
++            {
++                --stream->log_frames;
++                TRACE_(x3media)("ddraw %p frame %u: %s-%s (stream %s) to sample %p (surface %p), hr %#lx%s.\n",
++                        stream, stream->frames, debugstr_time(start_time), debugstr_time(end_time),
++                        debugstr_time(start_stream_time), sample, sample->surface, sample->update_hr,
++                        sample->continuous_update ? ", continuous" : "");
++            }
++            else if (!(stream->frames % 300))
++                TRACE_(x3media)("ddraw %p: %u frames, %u updates.\n", stream, stream->frames, stream->updates);
+ 
+             if (sample->continuous_update && SUCCEEDED(sample->update_hr))
+             {
+@@ -1784,6 +1817,13 @@ static HRESULT WINAPI ddraw_sample_Update(IDirectDrawStreamSample *iface,
+     }
+ 
+     sample->continuous_update = (flags & SSUPDATE_ASYNC) && (flags & SSUPDATE_CONTINUOUS);
++    ++sample->parent->updates;
++    if (sample->parent->log_updates)
++    {
++        --sample->parent->log_updates;
++        TRACE_(x3media)("ddraw %p update %u: sample %p (surface %p), flags %#lx, event %p.\n", sample->parent,
++                sample->parent->updates, sample, sample->surface, flags, event);
++    }
+ 
+     sample->update_hr = MS_S_NOUPDATE;
+     sample->busy = TRUE;
+diff --git a/dlls/amstream/filter.c b/dlls/amstream/filter.c
+index 8a7e4fc..27ee377 100644
+--- a/dlls/amstream/filter.c
++++ b/dlls/amstream/filter.c
+@@ -20,10 +20,12 @@
+ 
+ #define COBJMACROS
+ #include "amstream_private.h"
++#include "wine/strmbase.h"
+ #include "wine/debug.h"
+ #include "wine/list.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(quartz);
++WINE_DECLARE_DEBUG_CHANNEL(x3media);
+ 
+ struct enum_pins
+ {
+@@ -303,6 +305,7 @@ static HRESULT WINAPI filter_Stop(IMediaStreamFilter *iface)
+     struct event *event;
+ 
+     TRACE("iface %p.\n", iface);
++    TRACE_(x3media)("filter %p stops.\n", filter);
+ 
+     EnterCriticalSection(&filter->cs);
+ 
+@@ -331,6 +334,7 @@ static HRESULT WINAPI filter_Pause(IMediaStreamFilter *iface)
+     struct filter *filter = impl_from_IMediaStreamFilter(iface);
+ 
+     TRACE("iface %p.\n", iface);
++    TRACE_(x3media)("filter %p pauses.\n", filter);
+ 
+     EnterCriticalSection(&filter->cs);
+ 
+@@ -346,6 +350,7 @@ static HRESULT WINAPI filter_Run(IMediaStreamFilter *iface, REFERENCE_TIME start
+     struct filter *filter = impl_from_IMediaStreamFilter(iface);
+ 
+     TRACE("iface %p, start %s.\n", iface, wine_dbgstr_longlong(start));
++    TRACE_(x3media)("filter %p runs.\n", filter);
+ 
+     EnterCriticalSection(&filter->cs);
+ 
+@@ -1009,6 +1014,9 @@ static HRESULT WINAPI filter_seeking_SetPositions(IMediaSeeking *iface, LONGLONG
+     TRACE("iface %p, current %s, current_flags %#lx, stop %s, stop_flags %#lx.\n", iface,
+             current_ptr ? wine_dbgstr_longlong(*current_ptr) : "<null>", current_flags,
+             stop_ptr ? wine_dbgstr_longlong(*stop_ptr): "<null>", stop_flags);
++    TRACE_(x3media)("filter %p seeks: current %s, flags %#lx, stop %s, flags %#lx, state %u.\n", filter,
++            current_ptr ? debugstr_time(*current_ptr) : "-", current_flags,
++            stop_ptr ? debugstr_time(*stop_ptr) : "-", stop_flags, filter->state);
+ 
+     EnterCriticalSection(&filter->cs);
+ 
+diff --git a/dlls/amstream/multimedia.c b/dlls/amstream/multimedia.c
+index dc85590..0724f36 100644
+--- a/dlls/amstream/multimedia.c
++++ b/dlls/amstream/multimedia.c
+@@ -27,8 +27,11 @@
+ #include "wingdi.h"
+ 
+ #include "amstream_private.h"
++#include "wine/strmbase.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(quartz);
++/* X3: a few lines per seek or state change, cheap enough to leave on (WINEDEBUG=+x3media). */
++WINE_DECLARE_DEBUG_CHANNEL(x3media);
+ 
+ struct multimedia_stream
+ {
+@@ -154,6 +157,7 @@ static HRESULT WINAPI multimedia_stream_SetState(IAMMultiMediaStream *iface, STR
+     HRESULT hr = E_INVALIDARG;
+ 
+     TRACE("(%p/%p)->(%u)\n", This, iface, new_state);
++    TRACE_(x3media)("mmstream %p %s.\n", This, new_state == STREAMSTATE_RUN ? "runs" : "stops");
+ 
+     if (new_state == STREAMSTATE_RUN)
+     {
+@@ -203,6 +207,7 @@ static HRESULT WINAPI multimedia_stream_Seek(IAMMultiMediaStream *iface, STREAM_
+     struct multimedia_stream *This = impl_from_IAMMultiMediaStream(iface);
+ 
+     TRACE("(%p/%p)->(%s)\n", This, iface, wine_dbgstr_longlong(seek_time));
++    TRACE_(x3media)("mmstream %p seeks to %s.\n", This, debugstr_time(seek_time));
+ 
+     return IMediaSeeking_SetPositions(This->media_seeking, &seek_time, AM_SEEKING_AbsolutePositioning, NULL, AM_SEEKING_NoPositioning);
+ }
+@@ -437,6 +442,7 @@ static HRESULT WINAPI multimedia_stream_OpenFile(IAMMultiMediaStream *iface,
+     PIN_DIRECTION pin_direction;
+ 
+     TRACE("(%p/%p)->(%s,%lx)\n", This, iface, debugstr_w(filename), flags);
++    TRACE_(x3media)("mmstream %p opens %s, flags %#lx.\n", This, debugstr_w(filename), flags);
+ 
+     if (!filename)
+         return E_POINTER;
+diff --git a/dlls/winegstreamer/quartz_parser.c b/dlls/winegstreamer/quartz_parser.c
+index 8d52667..0a59688 100644
+--- a/dlls/winegstreamer/quartz_parser.c
++++ b/dlls/winegstreamer/quartz_parser.c
+@@ -35,6 +35,7 @@
+ #include "ksmedia.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(quartz);
++WINE_DECLARE_DEBUG_CHANNEL(x3media);
+ 
+ static const GUID MEDIASUBTYPE_CVID = {mmioFOURCC('c','v','i','d'), 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
+ static const GUID MEDIASUBTYPE_VC1S = {mmioFOURCC('V','C','1','S'), 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
+@@ -98,6 +99,7 @@ struct parser_source
+      * thread when the streaming thread is not running, or when it is blocked
+      * by flushing_cs. */
+     bool need_segment;
++    unsigned int log_samples;   /* x3media: samples still to log after a seek or start */
+ 
+     bool eos;
+ 
+@@ -1229,6 +1231,19 @@ static HRESULT send_sample(struct parser_source *pin, IMediaSample *sample,
+     if (!pin->pin.pin.peer)
+         return VFW_E_NOT_CONNECTED;
+ 
++    if (pin->log_samples)
++    {
++        REFERENCE_TIME start = 0, stop = 0;
++        HRESULT time_hr = IMediaSample_GetTime(sample, &start, &stop);
++
++        --pin->log_samples;
++        TRACE_(x3media)("parser %p pin %p sample: %s, buffer pts %s (has_pts %d), %s, %u bytes.\n",
++                impl_from_strmbase_filter(pin->pin.pin.filter), pin,
++                SUCCEEDED(time_hr) ? debugstr_time(start) : "untimed",
++                buffer->has_pts ? debugstr_time(buffer->pts) : "-", buffer->has_pts,
++                buffer->delta ? "delta" : "sync point", size);
++    }
++
+     hr = IMemInputPin_Receive(pin->pin.pMemInputPin, sample);
+     TRACE("Receive() returned hr %#lx.\n", hr);
+     return hr;
+@@ -1243,6 +1258,9 @@ static void send_buffer(struct parser_source *pin, const struct wg_parser_buffer
+ 
+     if (pin->need_segment)
+     {
++        TRACE_(x3media)("parser %p pin %p new segment from %s.\n",
++                impl_from_strmbase_filter(pin->pin.pin.filter), pin, debugstr_time(pin->seek.llCurrent));
++        pin->log_samples = 3;
+         if (FAILED(hr = IPin_NewSegment(pin->pin.pin.peer,
+                 pin->seek.llCurrent, pin->seek.llStop, pin->seek.dRate)))
+             WARN("Failed to deliver new segment, hr %#lx.\n", hr);
+@@ -1470,7 +1488,8 @@ static LONGLONG parser_seek_start(struct parser *filter, struct parser_source *p
+         if (filter->sources[i] != pin && filter->sources[i]->pin.pin.peer)
+             return target;
+     }
+-    TRACE("Seeking to %s for a target of %s.\n", debugstr_time(max(target - 15000000, 0)), debugstr_time(target));
++    TRACE_(x3media)("parser %p seeks video to %s for a target of %s.\n", filter,
++            debugstr_time(max(target - 15000000, 0)), debugstr_time(target));
+     return max(target - 15000000, 0);
+ }
+ 
+diff --git a/dlls/winegstreamer/quartz_transform.c b/dlls/winegstreamer/quartz_transform.c
+index f2408c4..1c45f10 100644
+--- a/dlls/winegstreamer/quartz_transform.c
++++ b/dlls/winegstreamer/quartz_transform.c
+@@ -26,6 +26,7 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(quartz);
+ WINE_DECLARE_DEBUG_CHANNEL(winediag);
++WINE_DECLARE_DEBUG_CHANNEL(x3media);
+ 
+ struct transform
+ {
+@@ -49,6 +50,7 @@ struct transform
+     BOOL seen_sync_point;
+     BOOL need_sync_point;
+     BOOL after_flush;
++    unsigned int dropped;   /* x3media: frames dropped from before the target since the last flush */
+     BOOL timed_input;   /* the last input had a time, so output times are on wg_quartz_time_base() */
+     unsigned int skipped;
+ 
+@@ -333,7 +335,10 @@ static HRESULT WINAPI transform_sink_receive(struct strmbase_sink *pin, IMediaSa
+     if (IMediaSample_IsSyncPoint(sample) == S_OK)
+     {
+         if (filter->need_sync_point)
++        {
+             TRACE("Resuming at a sync point after skipping %u samples.\n", filter->skipped);
++            TRACE_(x3media)("decoder %p resumes at a sync point after skipping %u samples.\n", filter, filter->skipped);
++        }
+         filter->seen_sync_point = TRUE;
+         filter->need_sync_point = FALSE;
+     }
+@@ -395,10 +400,17 @@ static HRESULT WINAPI transform_sink_receive(struct strmbase_sink *pin, IMediaSa
+             {
+                 TRACE("Dropping a frame from before the seek target, %s-%s.\n",
+                         debugstr_time(start), debugstr_time(stop));
++                ++filter->dropped;
+                 IMediaSample_Release(output_sample);
+                 continue;
+             }
+             filter->after_flush = FALSE;
++            if (IMediaSample_GetTime(output_sample, &start, &stop) == S_OK)
++                TRACE_(x3media)("decoder %p: first frame %s-%s after dropping %u from before the target.\n",
++                        filter, debugstr_time(start), debugstr_time(stop), filter->dropped);
++            else
++                TRACE_(x3media)("decoder %p: first frame untimed after dropping %u.\n", filter, filter->dropped);
++            filter->dropped = 0;
+         }
+ 
+         hr = IMemInputPin_Receive(filter->source.pMemInputPin, output_sample);

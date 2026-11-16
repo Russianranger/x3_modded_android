@@ -79,6 +79,16 @@ PRoot rootfs (TRASC client runtime)
      0.1.7 hang looked like.
    - The in-game status line shows **last load N s**: the last stretch without a frame, taken from
      Wine's present trace. It's the number to compare between profiles.
+   - **Display path:** **RFB** (default) has the X server encode every frame for the app over
+     its socket. **Native surface** (experimental, 0.1.12) has TRASC's `x11-frame-bridge` copy
+     frames from the X server through shared memory straight to an Android surface. The RFB
+     connection then carries keys and pointer only, and the app falls back to RFB frames if the
+     surface stops. TRASC measured 59.7 frames/s delivered on the Thor this way against 40.7 for
+     RFB at 60. The status line shows which path is active.
+   - **CPU placement** (automatic since 0.1.12): X3's main thread runs on the fastest core (the
+     Thor's Cortex-X3, CPU 7), and every other thread of the launch runs on the other cores.
+     Android's cpuset still decides: when it leaves CPU 7 out, the main thread gets whatever is
+     allowed.
 5. In X3's own settings, turn **EAX off**. Pick a resolution that matches the Wine desktop.
 
 ### Saves and settings
@@ -185,6 +195,12 @@ filters (`winegstreamer.dll`). `patches/wine/` holds fixes for both, found on th
   or paused movie and, since 0.1.11, the one that matters for X3: it stops the face movie,
   seeks, and runs it again, and the seek to the start position then happened without the
   preroll, landing on another pilot.
+- **0008, amstream and winegstreamer (not for upstream):** an `x3media` debug channel, always on
+  in the runner. It logs files opened, state changes and seeks (target, flags, state), the
+  splitter's segments and video preroll, and the decoder's drops. It also logs the formats and
+  samples X3 sets up, and the first frames and updates after each segment, flush or state
+  change, then counts: a few lines per comms call. The comms face problems never showed up in a
+  run with media traces, and those traces are far too heavy to leave on.
 
 **Building and testing:** CI builds both DLLs (PE side only; `winegstreamer.dll` keeps using the
 runtime's own `winegstreamer.so` from the same source) from the `wine-10.0` tag. It then runs, on
@@ -628,3 +644,43 @@ was 32 frames per second, against 24 and 29.
 - `main_thread_profile` in `x3-state.json`: the game's main thread sampled 20 times a second,
   shares of running, waiting and stopped by PRoot, and the commonest system calls, kept apart
   for loading (no frame presented for 4 s) and playing.
+
+
+### 15 November 2026, AYN Thor, build 0.1.11 (CPU profile fastest)
+
+**What worked:** loading took 143 s, and play ended at 42 frames per second (fast in the run
+before: 146 s, median 32).
+
+**Problems:**
+
+- **The comms face video still glitched.** The run had no media traces, and the previous
+  diagnostic run lost the comms part of its log to rotation. So 0008 adds a light media log
+  that is always on.
+- **The main thread lost the prime core.** The new main-thread profile split time like this:
+
+  | | Running | Asleep | Stopped by PRoot | Disk |
+  |---|---:|---:|---:|---:|
+  | Loading | 73% | 15% | 7.5% | 4.3% |
+  | Playing | 72% | 26% | 1.8% | |
+
+  Asleep while playing was almost all in `futex` (19%): waiting for other threads, mostly the
+  presentation chain. The swapchain thread used 31% of a core and the X server 23%.
+
+  The 10 s thread samples explained part of the loading time. The supervisor's own CPU mask
+  changed every few seconds (0-5, 0-6, 0-4,6-7, 0-5,7, 0-7). `allow_game_cpus` copied it onto
+  every game thread, 12 to 59 threads a time. Whenever it lacked CPU 7, X3's main thread ran on
+  the A715/A710 cores (CPUs 3-5) for the next stretch: most of the loads.
+- **Box64's DynaCache** (0.4.4 caches translated code in `$HOME/.cache/box64` by default) left
+  no trace in the logs. Two balanced runs both loaded in about 180 s, so whether it holds X3's
+  32-bit code is unknown.
+
+**Changes in 0.1.12:**
+
+- Patch 0008 and `trace+x3media` in every run.
+- CPU placement `prime` (new default, `cpu_affinity`): the main thread goes on the fastest
+  core, re-checked every second, and other launch threads go off it. The supervisor's mask is
+  no longer copied. `affinity_update`, `android_cpuset`, `prime_cpus` and `main_thread_repins`
+  are in the state.
+- `dynacache_at_launch` and `dynacache` (each minute): Box64's cache folder, files and bytes.
+- Display path option: native surface (TRASC's frame bridge and its pinned
+  `libtrasc-presentation.so`).

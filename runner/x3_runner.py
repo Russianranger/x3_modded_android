@@ -32,7 +32,7 @@ import client_audio
 import client_presentation
 import client_vulkan
 import pe_info
-from client_metrics import LAUNCH_ENV, process_threads, allow_game_cpus
+from client_metrics import LAUNCH_ENV, process_threads, allow_game_cpus, place_game_threads, fastest_cpus
 from client_xauthority import write_xauthority
 
 HERE = Path(__file__).resolve().parent
@@ -56,6 +56,10 @@ stop_reason = None
 MEDIA_DEBUG = ','.join(level + '+' + channel for channel in
                        ('quartz', 'strmbase', 'winegstreamer', 'qasf', 'wmvcore', 'dmo',
                         'msacm', 'mpeg3', 'mp3dmod', 'mfplat') for level in ('warn', 'fixme'))
+# Patch 0008's channel in the patched amstream and winegstreamer: files opened, state changes,
+# seeks, segments, the first frames and updates after each, then counts. A few lines per comms
+# call, so it is always on: the comms face problems never showed up in a run with diagnostics.
+MEDIA_DEBUG += ',trace+x3media'
 
 
 def wine_debug(verbose=False, sound=False):
@@ -182,6 +186,39 @@ ARM64_SYSCALLS = {
     207: 'recvfrom', 211: 'sendmsg', 212: 'recvmsg', 215: 'munmap', 222: 'mmap', 226: 'mprotect',
     233: 'madvise', 260: 'wait4', 278: 'getrandom', 291: 'statx', 439: 'faccessat2'}
 THREAD_STATES = {'R': 'running', 'S': 'sleeping', 'D': 'disk', 't': 'traced', 'T': 'stopped'}
+
+
+def dynacache_summary(folder=None):
+    """X3 addition: Box64 0.4.4 caches translated code on disk by default ($HOME/.cache/box64), per
+    binary and per dynarec settings, so a second load with the same CPU profile can skip
+    translating. Whether X3's code lands there under WoW64 is not documented: count it."""
+    folder = Path(folder or os.path.join(os.environ.get('XDG_CACHE_HOME') or os.path.join(os.environ.get('HOME', '/root'), '.cache'), 'box64'))
+    found = {'folder': str(folder), 'files': 0, 'bytes': 0}
+    try:
+        entries = []
+        for entry in os.scandir(folder):
+            if entry.is_file(follow_symlinks=False):
+                size = entry.stat(follow_symlinks=False).st_size
+                found['files'] += 1; found['bytes'] += size
+                entries.append((size, entry.name))
+        found['largest'] = [{'name': name[-96:], 'bytes': size} for size, name in sorted(entries, reverse=True)[:8]]
+    except FileNotFoundError: found['missing'] = True
+    except OSError as error: found['error'] = error.strerror
+    return found
+
+
+def android_cpuset(proc=Path('/proc'), dev=Path('/dev/cpuset')):
+    """X3 addition: which Android cpuset this launch runs in, and its CPUs when readable."""
+    found = {}
+    try:
+        for line in (proc/'self'/'cgroup').read_text()[:4096].splitlines():
+            parts = line.split(':', 2)
+            if len(parts) == 3 and 'cpuset' in parts[1].split(','): found['group'] = parts[2]
+    except OSError as error: found['error'] = error.strerror
+    if 'group' in found:
+        try: found['cpus'] = (dev / found['group'].lstrip('/') / 'cpus').read_text()[:64].strip()
+        except OSError as error: found['cpus_error'] = error.strerror
+    return found
 
 
 class MainThreadProfile:
@@ -530,7 +567,7 @@ def validate_request(request, game=GAME):
     if request.get('renderer', 'turnip') not in ('turnip', 'software'): raise ValueError('Unsupported graphics option')
     client_vulkan.driver_file(request.get('turnip_driver', client_vulkan.DEFAULT_DRIVER))
     if request.get('cpu_profile', DEFAULT_CPU_PROFILE) not in CPU_PROFILES: raise ValueError('Unsupported CPU profile')
-    if request.get('cpu_affinity', 'available') not in ('available', 'game'): raise ValueError('Unsupported CPU affinity')
+    if request.get('cpu_affinity', 'prime') not in ('prime', 'available', 'game'): raise ValueError('Unsupported CPU affinity')
     if request.get('runtime_mode', 'auto') not in ('auto', 'compatibility'): raise ValueError('Unsupported runtime mode')
     client_presentation.options(request)
     for key in ('audio', 'dxvk_hud', 'diagnostic_logging', 'sound_diagnostics', 'vsync', 'controller_passthrough'):
@@ -637,7 +674,9 @@ class Supervisor:
         self.status['game_box64'] = dict(CPU_PROFILES[profile])
         try: affinity = sorted(os.sched_getaffinity(0))
         except (AttributeError, OSError): affinity = []
-        self.update(cpu_settings={k: v for k, v in self.env.items() if k.startswith('BOX64_')}, available_cpu_ids=affinity)
+        self.update(cpu_settings={k: v for k, v in self.env.items() if k.startswith('BOX64_')}, available_cpu_ids=affinity,
+                    android_cpuset=android_cpuset(), prime_cpus=sorted(fastest_cpus()),
+                    dynacache_at_launch=dynacache_summary())
 
     @contextmanager
     def timed(self, name):
@@ -849,6 +888,9 @@ class Supervisor:
                 self.watch_spin(sample, interval)
                 profile = self.profile.report()
                 if profile: self.status['main_thread_profile'] = profile
+                if time.monotonic() - getattr(self, 'last_dynacache', 0) >= 60:
+                    self.last_dynacache = time.monotonic()
+                    self.status['dynacache'] = dynacache_summary()
                 self.status['thread_sample'] = {k: v for k, v in sample.items() if k != 'threads'}
                 self.status['thread_sample']['thread_count'] = len(sample['threads'])
                 if sample.get('game_running'):
@@ -889,10 +931,25 @@ class Supervisor:
         if summary: self.status['crypto_pin'] = '%s/%s (%s)' % summary[-1]
 
     def profile_main_thread(self):
-        """Sample the game's main thread at 20 Hz; a load is any time Wine has not presented for 4 s."""
+        """Sample the game's main thread at 20 Hz; a load is any time Wine has not presented for 4 s.
+
+        With prime placement, also put the main thread back on the fastest core once a second:
+        a change of Android's cpuset resets every mask in it, and that happened every few seconds.
+        """
+        prime = fastest_cpus() if self.request.get('cpu_affinity', 'prime') == 'prime' else set()
+        if len(prime) >= (os.cpu_count() or 1) - 1: prime = set()
+        ticks = repins = 0
         while not self.stopping():
             seen = self.wine_log.last_present_seen if self.wine_log else None
             self.profile.sample('playing' if seen is not None and time.monotonic() - seen < 4 else 'loading')
+            ticks += 1
+            if prime and self.profile.pid and not ticks % 20:
+                try:
+                    if set(os.sched_getaffinity(self.profile.pid)) != prime:
+                        os.sched_setaffinity(self.profile.pid, prime)
+                        repins += 1
+                        self.status['main_thread_repins'] = repins
+                except OSError: pass   # gone, or the prime core is not in Android's cpuset now
             time.sleep(0.05)
 
     def watch_spin(self, sample, seconds):
@@ -911,7 +968,11 @@ class Supervisor:
     def sample_threads(self, pid):
         before = time.monotonic()
         sample = process_threads(pid, launch_token=self.launch_token, game_name=self.game_name)
-        if self.request.get('cpu_affinity', 'available') == 'available':
+        affinity = self.request.get('cpu_affinity', 'prime')
+        if affinity == 'prime':
+            sample['affinity_update'] = place_game_threads(sample, self.launch_token, game_name=self.game_name)
+            sample['affinity_update']['supervisor_cpus'] = sorted(os.sched_getaffinity(0))
+        elif affinity == 'available':
             sample['affinity_update'] = allow_game_cpus(sample, self.launch_token, game_name=self.game_name)
         sample['collection_seconds'] = round(time.monotonic() - before, 4)
         return sample

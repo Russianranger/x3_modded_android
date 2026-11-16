@@ -5,6 +5,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "runner"))
@@ -365,6 +366,97 @@ class LoadTimeTests(unittest.TestCase):
         self.assertEqual(match.groups(), ("3", "3", "program idle"))
         self.assertTrue(x3_runner.X3PIN_LOG.name == "x3pin.log")
 
+class PrimePlacementTests(unittest.TestCase):
+    def topology(self, root, capacities):
+        for cpu, capacity in capacities.items():
+            (root / f"cpu{cpu}").mkdir(parents=True)
+            (root / f"cpu{cpu}" / "cpu_capacity").write_text(f"{capacity}\n")
+        (root / "cpufreq").mkdir()            # not a CPU
+
+    def test_fastest_cpus_are_the_highest_capacity(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            # Snapdragon 8 Gen 2: three A510, two A715, two A710, one X3.
+            self.topology(root, {0: 325, 1: 325, 2: 325, 3: 870, 4: 870, 5: 870, 6: 870, 7: 1024})
+            self.assertEqual(client_metrics.fastest_cpus(root), {7})
+            self.assertEqual(client_metrics.fastest_cpus(root / "missing"), set())
+
+    def launch(self, root, token, threads):
+        for pid, tid, name in threads:
+            task = root / str(pid) / "task" / str(tid)
+            task.mkdir(parents=True, exist_ok=True)
+            (task / "stat").write_text(f"{tid} ({name}) R " + " ".join(["0"] * 16) + " 0 0 777 0\n")
+            (root / str(pid) / "environ").write_bytes(b"A=1\0" + client_metrics.LAUNCH_ENV.encode() + b"=" + token.encode() + b"\0")
+        (root / "self").mkdir(exist_ok=True)
+        return {"threads": [{"pid": pid, "tid": tid, "name": name, "start_ticks": 777} for pid, tid, name in threads]}
+
+    def test_main_thread_gets_the_prime_core_and_the_rest_leave_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            cpus = root / "sys"
+            self.topology(cpus, {i: (1024 if i == 7 else 870) for i in range(8)})
+            sample = self.launch(root / "proc", "tok", [(10, 10, "X3AP.exe"), (10, 11, "dxvk-cs"), (20, 20, "Xtigervnc")])
+            masks = {10: set(range(8)), 11: {0, 1, 2, 3, 4, 5}, 20: set(range(8))}
+            calls = []
+            def setaffinity(tid, mask): calls.append((tid, set(mask))); masks[tid] = set(mask)
+            with unittest.mock.patch("os.cpu_count", return_value=8):
+                result = client_metrics.place_game_threads(sample, "tok", proc=root / "proc", cpus=cpus,
+                                                          getaffinity=lambda tid: masks[tid], setaffinity=setaffinity)
+            # dxvk-cs was already off CPU 7: left alone.
+            self.assertEqual(calls, [(10, {7}), (20, set(range(7)))])
+            self.assertEqual(result["main_thread_cpus"], [7])
+            self.assertEqual(result["changed_threads"], 2)
+
+    def test_main_thread_falls_back_when_android_forbids_the_prime_core(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            cpus = root / "sys"
+            self.topology(cpus, {i: (1024 if i == 7 else 870) for i in range(8)})
+            sample = self.launch(root / "proc", "tok", [(10, 10, "X3AP.exe")])
+            masks = {10: {0, 1, 2, 3, 4, 5}}
+            def setaffinity(tid, mask):
+                allowed = set(mask) & {0, 1, 2, 3, 4, 5}      # what the kernel does with a cpuset
+                if not allowed: raise OSError(22, "Invalid argument")
+                masks[tid] = allowed
+            with unittest.mock.patch("os.cpu_count", return_value=8):
+                result = client_metrics.place_game_threads(sample, "tok", proc=root / "proc", cpus=cpus,
+                                                          getaffinity=lambda tid: masks[tid], setaffinity=setaffinity)
+            self.assertEqual(result["main_thread_cpus"], [0, 1, 2, 3, 4, 5])
+            self.assertEqual(result["errors"], 0)
+
+    def test_other_launches_are_not_touched(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            cpus = root / "sys"
+            self.topology(cpus, {i: (1024 if i == 7 else 870) for i in range(8)})
+            sample = self.launch(root / "proc", "other", [(10, 10, "X3AP.exe")])
+            with unittest.mock.patch("os.cpu_count", return_value=8):
+                result = client_metrics.place_game_threads(sample, "tok", proc=root / "proc", cpus=cpus,
+                                                          getaffinity=lambda tid: set(range(8)),
+                                                          setaffinity=lambda tid, mask: self.fail("changed"))
+            self.assertEqual(result["changed_threads"], 0)
+
+    def test_dynacache_folder_is_summarised(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.assertTrue(x3_runner.dynacache_summary(root / "box64")["missing"])
+            (root / "box64").mkdir()
+            (root / "box64" / "X3AP.exe-abc.box64").write_bytes(b"x" * 300)
+            (root / "box64" / "ntdll.so-def.box64").write_bytes(b"x" * 100)
+            summary = x3_runner.dynacache_summary(root / "box64")
+            self.assertEqual((summary["files"], summary["bytes"]), (2, 400))
+            self.assertEqual(summary["largest"][0], {"name": "X3AP.exe-abc.box64", "bytes": 300})
+
+    def test_android_cpuset_is_reported(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "proc" / "self").mkdir(parents=True)
+            (root / "proc" / "self" / "cgroup").write_text("5:schedtune:/top-app\n4:cpuset:/top-app\n0::/uid_10234/pid_99\n")
+            (root / "dev" / "top-app").mkdir(parents=True)
+            (root / "dev" / "top-app" / "cpus").write_text("0-7\n")
+            self.assertEqual(x3_runner.android_cpuset(root / "proc", root / "dev"), {"group": "/top-app", "cpus": "0-7"})
+
+
 class MainThreadProfileTests(unittest.TestCase):
     def task(self, root, state, syscall):
         task = root / "4242" / "task" / "4242"
@@ -411,6 +503,10 @@ class MediaRunEightTests(unittest.TestCase):
         self.assertFalse(x3_runner.gstreamer_filters_registered(prefix))          # 64-bit view only
         (prefix / "system.reg").write_text("WINE REGISTRY Version 2\n" + key.format(view="Wow6432Node\\\\"))
         self.assertTrue(x3_runner.gstreamer_filters_registered(prefix))
+
+    def test_media_events_are_always_logged(self):
+        self.assertIn("trace+x3media", x3_runner.wine_debug())
+        self.assertNotIn("trace+quartz", x3_runner.wine_debug())
 
     def test_sound_diagnostics_trace_directshow_not_dsound(self):
         debug = x3_runner.wine_debug(sound=True)

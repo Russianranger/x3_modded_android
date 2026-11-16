@@ -24,6 +24,7 @@
   "files": {
     "jniLibs/arm64-v8a/libproot.so": {"source": "trasc_apk", "member": "lib/arm64-v8a/libproot.so", "sha256": "51e08dddf51f42a182bad70ca7fa6f8cebe7589b753ef788a31af73b6227e25e"},
     "jniLibs/arm64-v8a/libproot-loader.so": {"source": "trasc_apk", "member": "lib/arm64-v8a/libproot-loader.so", "sha256": "43161d1633dd9e174e362ddb335503a7456e2e76bbed96e3095964d9fcb7b880"},
+    "jniLibs/arm64-v8a/libtrasc-presentation.so": {"source": "trasc_apk", "member": "lib/arm64-v8a/libtrasc-presentation.so", "sha256": "f8e0241ec2ba6029a60b326d27002f31e4b3002ac2c4a2f059eadc33fd67d756"},
     "assets/payload/libasound_module_pcm_trasc.so": {"source": "trasc_apk", "member": "assets/libasound_module_pcm_trasc.so", "sha256": "532a502ed4b2035ab1b38efb5eda55d6c5e08135c0b0120d8f6ed317fc286b33"},
     "assets/payload/audio-bundle.json": {"source": "trasc_apk", "member": "assets/audio-bundle.json", "sha256": "1f96b59d5f011d8bf8d3810b285bc989fb3507cb5ec35533f36b93eed017cb81"},
     "assets/payload/turnip.so": {"source": "trasc_apk", "member": "assets/turnip.so", "sha256": "2984e3350d8eb1fee18edc7b0afbaed63dc42cb2de487099bdd04149b5ec65cf"},

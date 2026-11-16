@@ -35,6 +35,7 @@ final class GameRuntime {
     boolean alive(){return process!=null&&process.isAlive();}
     File displaySocket(){return new File(transientPaths.run,"display.sock");}
     File inputSocket(){return new File(transientPaths.run,"input.sock");}
+    File frameSocket(){return new File(transientPaths.run,"frames.sock");}
 
     JSONObject launchState() {
         File report=new File(transientPaths.run,"status.json");
@@ -99,14 +100,16 @@ final class GameRuntime {
             String resolution=options.optString("resolution","1280x720");
             if(!RESOLUTIONS.contains(resolution))throw new IOException("Unsupported resolution");
             String renderer=options.optString("renderer","turnip");
+            String presentation=options.optString("presentation_mode","rfb");
+            if(!presentation.equals("rfb")&&!presentation.equals("native_surface"))throw new IOException("Unsupported display path");
             JSONObject request=new JSONObject()
                 .put("mode",program.equalsIgnoreCase("X3AP.exe")?"game":"program").put("program",program)
                 .put("arguments",new JSONArray(splitArguments(options.optString("arguments",""))))
                 .put("resolution",resolution).put("renderer",renderer)
                 .put("turnip_driver",options.optString("turnip_driver","24.3.4"))
-                .put("presentation_mode","rfb").put("display_fps",options.optInt("display_fps",60))
+                .put("presentation_mode",presentation).put("display_fps",options.optInt("display_fps",60))
                 .put("audio",options.optBoolean("audio",true)).put("dxvk_hud",options.optBoolean("dxvk_hud",true))
-                .put("cpu_profile",options.optString("cpu_profile","fast")).put("cpu_affinity","available")
+                .put("cpu_profile",options.optString("cpu_profile","fast")).put("cpu_affinity","prime")
                 .put("runtime_mode",options.optString("runtime_mode","auto"))
                 .put("diagnostic_logging",options.optBoolean("diagnostic_logging",false))
                 .put("sound_diagnostics",options.optBoolean("sound_diagnostics",false))
@@ -159,7 +162,10 @@ final class GameRuntime {
                 JSONObject state=launchState();
                 if(state!=null&&state.optString("phase").equals("error"))throw new IOException(state.optString("error"));
                 if(!process.isAlive())throw new IOException("Runtime exited during startup. Export logs (x3-proot.log).");
-                if(displaySocket().exists()){status="Display open · Wine is preparing (the first launch can take a few minutes)";return state==null?new JSONObject():state;}
+                // Native surface: the runner reports which path it started (or why it fell back to RFB)
+                // just after the display socket appears; the game screen needs to know which.
+                boolean reported=!request.getString("presentation_mode").equals("native_surface")||(state!=null&&state.has("presentation_active"));
+                if(displaySocket().exists()&&(reported||i>=250)){status="Display open · Wine is preparing (the first launch can take a few minutes)";return state==null?new JSONObject():state;}
                 Thread.sleep(100);
             }
             throw new IOException("Display startup timed out; export logs");

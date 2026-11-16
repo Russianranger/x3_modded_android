@@ -1,7 +1,9 @@
 // Adapted from trasc-server-android ClientActivity.java (commit 99e8c86f).
-// X3 changes: RFB display only (Native Surface measured slower in TRASC and is omitted), no
-// EverQuest commands / mouse-look tile, help overlay (peek while System is held, pin on demand),
-// app actions TextInput and HelpOverlayToggle from the controller.
+// X3 changes: no EverQuest commands / mouse-look tile, help overlay (peek while System is held, pin
+// on demand), app actions TextInput and HelpOverlayToggle from the controller. Native Surface is an
+// option (0.1.12): TRASC's first Thor measurement had it slower, its batched transport later
+// delivered 59.7 frames/s against RFB's 40.7; the RFB connection then carries input only, and a
+// failed surface falls back to RFB frames.
 package io.github.russianranger.x3;
 
 import android.app.*;
@@ -22,6 +24,9 @@ public final class GameActivity extends Activity {
     private GameRuntime runtime;
     private ControllerManager controller;
     private GameView display;
+    private io.github.russianranger.trasc.NativePresentation nativeDisplay;
+    private volatile boolean nativeActive;
+    private String displayRate="";
     private HelpOverlayView overlay;
     private TextView status,layerBanner;
     private final Runnable hideLayer=()->{if(layerBanner!=null)layerBanner.animate().alpha(0f).setDuration(250).start();};
@@ -42,6 +47,13 @@ public final class GameActivity extends Activity {
         StringBuilder text=new StringBuilder(phase);
         if(launch!=null){
             if(launch.has("renderer"))text.append("\n").append(launch.optString("renderer"));
+            text.append(nativeActive?" · native surface":" · RFB");
+            if(launch.has("presentation_fallback"))text.append(" (native surface unavailable: ").append(launch.optString("presentation_fallback")).append(")");
+            if(nativeActive&&nativeDisplay!=null)try{
+                JSONObject surface=nativeDisplay.sample(System.nanoTime());
+                if(surface.has("surface_posts_per_second"))displayRate=String.format(java.util.Locale.ROOT," %.0f/s",surface.optDouble("surface_posts_per_second"));
+                text.append(displayRate);
+            }catch(org.json.JSONException ignored){}
             JSONObject present=launch.optJSONObject("wine_present");
             if(present!=null)text.append(String.format(java.util.Locale.ROOT," · Wine %.1f fps",present.optDouble("per_second")));
             org.json.JSONArray pauses=launch.optJSONArray("present_pauses_seconds");
@@ -64,6 +76,16 @@ public final class GameActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         FrameLayout layout=new FrameLayout(this);layout.setBackgroundColor(Color.BLACK);
         display=new GameView();layout.addView(display,new FrameLayout.LayoutParams(-1,-1));
+        JSONObject launched=runtime.launchState();
+        nativeActive=launched!=null&&"native_surface".equals(launched.optString("presentation_active"));
+        if(nativeActive){
+            nativeDisplay=new io.github.russianranger.trasc.NativePresentation(this,runtime.frameSocket(),new io.github.russianranger.trasc.NativePresentation.Events(){
+                public void failed(String reason){nativeFailed(reason);}
+                public void size(int width,int height){display.nativeSize(width,height);}
+            });
+            // Under the (then transparent) input view: Surface pixels show through it.
+            layout.addView(nativeDisplay,0,new FrameLayout.LayoutParams(-1,-1,Gravity.CENTER));
+        }
         overlay=new HelpOverlayView(this);overlay.setVisibility(View.GONE);layout.addView(overlay,new FrameLayout.LayoutParams(-1,-1));
         try(InputStream in=getAssets().open("controls/overlay-data.json")){
             ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] b=new byte[16384];int n;while((n=in.read(b))>0)out.write(b,0,n);
@@ -192,7 +214,14 @@ public final class GameActivity extends Activity {
     @Override public void onBackPressed(){if(display.hasPointerCapture()){display.releasePointerCapture();setMenuOpen(true);return;}if(menuOpen)setMenuOpen(false);else super.onBackPressed();}
     @Override public void onWindowFocusChanged(boolean focus){super.onWindowFocusChanged(focus);if(focus&&!keyboardOpen)immersive();if(controller!=null)controller.capture(gameInputActive());if(!focus&&display!=null)display.input.releaseAll();}
     @Override protected void onPause(){if(controller!=null)controller.capture(false);if(display!=null)display.input.releaseAll();super.onPause();}
-    @Override protected void onDestroy(){handler.removeCallbacksAndMessages(null);if(layerBanner!=null)layerBanner.animate().cancel();if(controller!=null)controller.close();if(display!=null)display.close();super.onDestroy();}
+    /** The surface reader stopped: show RFB frames instead, in the same session. */
+    private void nativeFailed(String reason){
+        if(!nativeActive)return;
+        nativeActive=false;Logs.failure(runtime.paths.logs,"native_surface",new IOException(reason==null?"failed":reason));
+        if(nativeDisplay!=null){nativeDisplay.close();nativeDisplay.setVisibility(View.GONE);}
+        display.send(r->r.request(false));display.postInvalidate();
+    }
+    @Override protected void onDestroy(){if(nativeDisplay!=null)nativeDisplay.close();handler.removeCallbacksAndMessages(null);if(layerBanner!=null)layerBanner.animate().cancel();if(controller!=null)controller.close();if(display!=null)display.close();super.onDestroy();}
 
     private final class GameView extends View implements RfbConnection.Screen {
         private final Object pixelsLock=new Object();
@@ -226,7 +255,8 @@ public final class GameActivity extends Activity {
                 File displayPath=runtime.displaySocket();TransientPaths.validateSocket(displayPath);
                 local.connect(new LocalSocketAddress(displayPath.getPath(),LocalSocketAddress.Namespace.FILESYSTEM));
                 local.setSoTimeout(15000);
-                RfbConnection r=new RfbConnection(local.getInputStream(),local.getOutputStream(),this);r.handshake(true);
+                // Native surface: RFB carries keys and pointer only, no frames.
+                RfbConnection r=new RfbConnection(local.getInputStream(),local.getOutputStream(),this);r.handshake(!nativeActive);
                 local.setSoTimeout(0);connection=r;
                 new Thread(this::connectInput,"x3-input-connect").start();
                 while(!closed)r.readUpdate();
@@ -257,13 +287,30 @@ public final class GameActivity extends Activity {
         @Override public void pixels(int x,int y,int w,int h,int[] colors){synchronized(pixelsLock){bitmap.setPixels(colors,0,w,x,y,w,h);}}
         @Override public void copy(int x,int y,int w,int h,int sx,int sy){synchronized(pixelsLock){if(copyBuffer.length<w*h)copyBuffer=new int[w*h];bitmap.getPixels(copyBuffer,0,w,sx,sy,w,h);bitmap.setPixels(copyBuffer,0,w,x,y,w,h);}}
         @Override public void updated(){postInvalidateOnAnimation();}
+        /** Where the frame sits in this view: scaled to fit, centred. */
+        private void fit(){
+            if(frameWidth<1||frameHeight<1||getWidth()<1)return;
+            float scale=Math.min((float)getWidth()/frameWidth,(float)getHeight()/frameHeight);float w=frameWidth*scale,h=frameHeight*scale;
+            bounds.set((getWidth()-w)/2,(getHeight()-h)/2,(getWidth()+w)/2,(getHeight()+h)/2);
+        }
+        /** The native surface reported its frame size: same fit for the surface view and for input. */
+        void nativeSize(int width,int height){
+            frameWidth=width;frameHeight=height;input.size(width,height);fit();
+            if(nativeDisplay!=null&&bounds.width()>0){
+                FrameLayout.LayoutParams params=new FrameLayout.LayoutParams(Math.round(bounds.width()),Math.round(bounds.height()),Gravity.CENTER);
+                nativeDisplay.setLayoutParams(params);
+            }
+        }
+        @Override protected void onSizeChanged(int w,int h,int oldw,int oldh){super.onSizeChanged(w,h,oldw,oldh);if(nativeActive)post(()->nativeSize(frameWidth,frameHeight));}
         @Override protected void onDraw(Canvas canvas) {
+            if(nativeActive){fit();return;}   // transparent: the surface below shows the game
             long started=System.nanoTime();canvas.drawColor(Color.BLACK);
-            synchronized(pixelsLock){if(bitmap!=null){float scale=Math.min((float)getWidth()/bitmap.getWidth(),(float)getHeight()/bitmap.getHeight());float w=bitmap.getWidth()*scale,h=bitmap.getHeight()*scale;bounds.set((getWidth()-w)/2,(getHeight()-h)/2,(getWidth()+w)/2,(getHeight()+h)/2);canvas.drawBitmap(bitmap,null,bounds,paint);}}
+            synchronized(pixelsLock){if(bitmap!=null){fit();canvas.drawBitmap(bitmap,null,bounds,paint);}}
             RfbConnection r=connection;if(r!=null)r.stats.drawn(System.nanoTime()-started);
         }
         private boolean position(MotionEvent event) {
-            if(bitmap==null||bounds.width()==0||!bounds.contains(event.getX(),event.getY()))return false;
+            fit();
+            if(bounds.width()==0||!bounds.contains(event.getX(),event.getY()))return false;
             input.position((event.getX()-bounds.left)*frameWidth/bounds.width(),(event.getY()-bounds.top)*frameHeight/bounds.height());return true;
         }
         @Override public boolean onTouchEvent(MotionEvent event) {

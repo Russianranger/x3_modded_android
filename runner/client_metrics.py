@@ -133,3 +133,67 @@ def allow_game_cpus(sample, launch_token, proc=Path('/proc'), game_name='x3ap.ex
                     result['changed_threads'] += 1
             except (OSError, ValueError, IndexError): result['errors'] += 1
     return result
+
+
+def fastest_cpus(cpus=Path('/sys/devices/system/cpu')):
+    """X3 addition: the CPUs of the highest capacity (Snapdragon 8 Gen 2 in the Thor: CPU 7, the
+    Cortex-X3), from the scheduler's cpu_capacity or else the highest maximum frequency."""
+    found = {}
+    for path in sorted(cpus.glob('cpu[0-9]*')):
+        if not path.name[3:].isdecimal(): continue
+        for name in ('cpu_capacity', 'cpufreq/cpuinfo_max_freq'):
+            try:
+                found[int(path.name[3:])] = int((path/name).read_text().split()[0])
+                break
+            except (OSError, ValueError, IndexError): continue
+    if not found: return set()
+    top = max(found.values())
+    return {cpu for cpu, capacity in found.items() if capacity == top}
+
+
+def place_game_threads(sample, launch_token, proc=Path('/proc'), cpus=Path('/sys/devices/system/cpu'),
+                       game_name='x3ap.exe', getaffinity=os.sched_getaffinity, setaffinity=os.sched_setaffinity):
+    """X3 replacement for allow_game_cpus: the game's main thread on the fastest core, every other
+    thread of this launch on the rest.
+
+    allow_game_cpus copied the supervisor's own mask onto the game's threads every 10 s, and on
+    the Thor Android changes that mask every few seconds (0-5, 0-6, 0-4,6-7, 0-7 in one run):
+    X3's main thread spent much of each load off CPU 7. Masks asked for here are cut down by the
+    kernel to what Android's cpuset allows at the time, so this never goes beyond Android's policy;
+    when the prime core is not allowed at all, the main thread gets whatever is.
+    Same launch-marker, owner and thread start checks as allow_game_cpus.
+    """
+    prime = fastest_cpus(cpus)
+    every = set(range(os.cpu_count() or 1))
+    rest = every - prime
+    result = {'prime_cpus': sorted(prime), 'main_thread_cpus': None, 'changed_threads': 0, 'errors': 0}
+    if not prime or len(rest) < 2: return result
+    marker = (LAUNCH_ENV+'='+launch_token).encode()
+    try: uid = (proc/'self').stat().st_uid
+    except OSError: return result
+    marked = {}
+    for t in sample['threads']:
+        pid, tid = t['pid'], t['tid']
+        if pid not in marked:
+            try:
+                if (proc/str(pid)).stat().st_uid != uid: raise OSError
+                with (proc/str(pid)/'environ').open('rb') as source: environment = source.read(65537)
+                marked[pid] = len(environment) <= 65536 and marker in environment.split(b'\0')
+            except OSError: marked[pid] = False
+        if not marked[pid]: continue
+        main = tid == pid and t['name'].lower() == game_name[:15].lower()
+        try:
+            raw = (proc/str(pid)/'task'/str(tid)/'stat').read_text()[:4096]
+            if int(raw[raw.rfind(')')+2:].split()[19]) != t.get('start_ticks'): continue
+            current = set(getaffinity(tid))
+            if main:
+                if current != prime:
+                    try: setaffinity(tid, prime)
+                    except OSError: setaffinity(tid, every)     # prime core not allowed now
+                    result['changed_threads'] += 1
+                result['main_thread_cpus'] = sorted(getaffinity(tid))
+            elif current & prime:
+                setaffinity(tid, rest)
+                result['changed_threads'] += 1
+        except (OSError, ValueError, IndexError): result['errors'] += 1
+    return result
