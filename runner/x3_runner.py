@@ -228,14 +228,17 @@ class MainThreadProfile:
     run's 146 s loads, sometimes stopped by PRoot (state t, wchan ptrace_stop). This says how much
     of a load goes to PRoot ('traced'), to waiting on wineserver ('sleeping' in read) and to the
     game's own work ('running'), and which system calls are behind each.
+
+    0.1.13: 'below_cap' repeats the playing samples taken while Wine reported fewer frames than
+    the frame cap, so time spent waiting at the cap does not hide what slows the rest.
     """
     def __init__(self, proc=Path('/proc')):
         self.proc, self.pid = proc, None
         self.lock = threading.Lock()
-        self.states = {'loading': {}, 'playing': {}}
-        self.calls = {'loading': {}, 'playing': {}}
+        self.states = {'loading': {}, 'playing': {}, 'below_cap': {}}
+        self.calls = {'loading': {}, 'playing': {}, 'below_cap': {}}
 
-    def sample(self, phase):
+    def sample(self, *phases):
         if self.pid is None: return
         task = self.proc / str(self.pid) / 'task' / str(self.pid)
         try:
@@ -245,11 +248,12 @@ class MainThreadProfile:
         try: call = (task / 'syscall').read_text().split(maxsplit=1)[0]
         except (OSError, IndexError): call = ''
         with self.lock:
-            states = self.states[phase]
-            states[state] = states.get(state, 0) + 1
-            if call.isdecimal():
-                key = state + ':' + ARM64_SYSCALLS.get(int(call), call)
-                self.calls[phase][key] = self.calls[phase].get(key, 0) + 1
+            for phase in phases:
+                states = self.states[phase]
+                states[state] = states.get(state, 0) + 1
+                if call.isdecimal():
+                    key = state + ':' + ARM64_SYSCALLS.get(int(call), call)
+                    self.calls[phase][key] = self.calls[phase].get(key, 0) + 1
 
     def report(self):
         """Shares of samples per phase: states, then the eight commonest state:syscall pairs."""
@@ -262,6 +266,58 @@ class MainThreadProfile:
                 out[phase] = {'samples': total,
                               **{state: round(count / total, 3) for state, count in sorted(states.items(), key=lambda item: -item[1])},
                               'syscalls': {key: round(count / total, 3) for key, count in calls}}
+        return out
+
+
+def read_number(path, scale=1.0):
+    """First number in a sysfs file (kgsl's '37 %' included), or None when it cannot be read."""
+    try: match = re.match(r'\s*(\d+)', path.read_text())
+    except OSError: return None
+    return int(match[1]) * scale if match else None
+
+
+class ClockProfile:
+    """X3 addition: CPU and GPU clocks once a second while playing, at the frame cap and below it.
+
+    The twelfth Thor run held 60 fps most of the time but fell to 42-48 with the main thread busy
+    85-94 %. This tells a slow core (clocked down: thermal limit or power mode) from a busy one, and
+    a GPU at its limit from an idle one. Android may hide kgsl's files from apps; then the GPU
+    fields stay empty and 'gpu_readable' says so.
+    """
+    KGSL = Path('/sys/class/kgsl/kgsl-3d0')
+
+    def __init__(self, cpu, cpus=Path('/sys/devices/system/cpu'), kgsl=None):
+        self.cpu = cpus / ('cpu%d' % cpu) / 'cpufreq' if cpu is not None else None
+        self.kgsl = kgsl or self.KGSL
+        self.lock = threading.Lock()
+        self.bands = {}
+        self.gpu_readable = None
+        self.cpu_max = read_number(self.cpu / 'cpuinfo_max_freq') if self.cpu else None
+
+    def sample(self, band):
+        values = {}
+        if self.cpu:
+            values['cpu_mhz'] = read_number(self.cpu / 'scaling_cur_freq', 1e-3)
+            values['cpu_limit_mhz'] = read_number(self.cpu / 'scaling_max_freq', 1e-3)
+        values['gpu_busy_percent'] = read_number(self.kgsl / 'gpu_busy_percentage')
+        values['gpu_mhz'] = read_number(self.kgsl / 'devfreq' / 'cur_freq', 1e-6) or read_number(self.kgsl / 'gpuclk', 1e-6)
+        if not self.gpu_readable: self.gpu_readable = values['gpu_busy_percent'] is not None
+        with self.lock:
+            totals = self.bands.setdefault(band, {'samples': 0})
+            totals['samples'] += 1
+            for key, value in values.items():
+                if value is None: continue
+                entry = totals.setdefault(key, [0, 0.0, value, value])   # count, sum, min, max
+                entry[0] += 1; entry[1] += value; entry[2] = min(entry[2], value); entry[3] = max(entry[3], value)
+
+    def report(self):
+        out = {'cpu': self.cpu.parent.name if self.cpu else None,
+               'cpu_max_mhz': round(self.cpu_max / 1000) if self.cpu_max else None, 'gpu_readable': self.gpu_readable}
+        with self.lock:
+            for band, totals in self.bands.items():
+                out[band] = {'samples': totals['samples'],
+                             **{key: {'mean': round(v[1] / v[0]), 'min': round(v[2]), 'max': round(v[3])}
+                                for key, v in totals.items() if key != 'samples'}}
         return out
 
 
@@ -280,7 +336,10 @@ def dxvk_configuration(request):
     TRASC's vulkan-probe passed because it never waits for a present.
     """
     options = [] if request.get('vsync', False) else ['d3d9.presentInterval = 0']
-    options.append('d3d9.maxFrameRate = %d' % request.get('display_fps', 60))   # nothing above the frame bridge rate is seen
+    # Nothing above the frame bridge rate is seen. DXVK 3 reads dxvk.maxFrameRate first and
+    # falls back to d3d9.maxFrameRate; 2.5.3 only knows the d3d9 one.
+    key = 'd3d9' if request.get('dxvk_version', client_vulkan.DEFAULT_DXVK) == '2.5.3' else 'dxvk'
+    options.append('%s.maxFrameRate = %d' % (key, request.get('display_fps', 60)))
     return '; '.join(options)
 
 
@@ -305,6 +364,10 @@ def fatal_launch_error(log, game=False):
                 detail = ': Box64 cannot run the x86 instruction ' + opcode[-1].strip()
             return ('The game crashed (unhandled ' + crash[1].lower() + location + detail + '). '
                     'Export Logs and check x3-wine.log.')
+    dxvk = re.search(r"Device does not support required feature '(\w+)'|DXVK: No adapters found", log)
+    if dxvk:
+        return ('DXVK could not use the Vulkan driver' + (' (it lacks ' + dxvk[1] + ')' if dxvk[1] else '')
+                + '. Choose DXVK 2.5.3, or Turnip 26.0.0, and launch again.')
     match = re.search(r'wine: could not load kernel32\.dll, status ([0-9a-f]+)', log, re.I)
     if match:
         return 'Wine could not start its Windows loader (kernel32.dll, ' + match[1] + '). Reinstall the runtime and export Logs.'
@@ -314,6 +377,13 @@ def fatal_launch_error(log, game=False):
             return 'A required Windows library could not load: ' + missing[-1][:350] + '. Export Logs for details.'
         return 'Windows program initialization failed. Export Logs (x3-wine.log) for the failing module.'
     return None
+
+
+def frame_band(wine_log, cap, now=None):
+    """'at_cap' or 'below_cap' from Wine's latest fps report (every 1.5 s while presenting), else 'unknown'."""
+    with wine_log.lock: present = dict(wine_log.fields.get('wine_present') or {})
+    if not present or (now or time.time()) - present.get('sampled_at', 0) >= 4: return 'unknown'
+    return 'below_cap' if present['per_second'] < cap - 3 else 'at_cap'
 
 
 class WineLog:
@@ -340,7 +410,10 @@ class WineLog:
             for line in text.splitlines():
                 if re.search(r'Loaded L".*\\+d3d9\.dll".*: native\s*$', line, re.I):
                     self.fields['native_d3d9_loaded'] = True
-                if re.search(r'DXVK: v?2\.5\.3\b', line): self.fields['dxvk_loaded'] = '2.5.3'
+                loaded = re.search(r'DXVK: v?(\d+\.\d+(?:\.\d+)?)\b', line)
+                if loaded: self.fields['dxvk_loaded'] = loaded[1]
+                binding = re.search(r'Binding model: ([\w ]{1,40})', line)
+                if binding: self.fields['dxvk_binding_model'] = binding[1].strip()
                 pin = X3PIN_SUMMARY.search(line)
                 if pin: self.fields['crypto_pin'] = f'{pin[1]}/{pin[2]} ({pin[3]})'
                 mode = re.search(r'Present mode: (VK_PRESENT_MODE_\w+)', line)
@@ -566,6 +639,7 @@ def validate_request(request, game=GAME):
     if request.get('resolution') not in RESOLUTIONS: raise ValueError('Unsupported resolution')
     if request.get('renderer', 'turnip') not in ('turnip', 'software'): raise ValueError('Unsupported graphics option')
     client_vulkan.driver_file(request.get('turnip_driver', client_vulkan.DEFAULT_DRIVER))
+    client_vulkan.dxvk_files(request.get('dxvk_version', client_vulkan.DEFAULT_DXVK))
     if request.get('cpu_profile', DEFAULT_CPU_PROFILE) not in CPU_PROFILES: raise ValueError('Unsupported CPU profile')
     if request.get('cpu_affinity', 'prime') not in ('prime', 'available', 'game'): raise ValueError('Unsupported CPU affinity')
     if request.get('runtime_mode', 'auto') not in ('auto', 'compatibility'): raise ValueError('Unsupported runtime mode')
@@ -659,7 +733,9 @@ class Supervisor:
         if request.get('renderer', 'turnip') == 'turnip':
             version = request.get('turnip_driver', client_vulkan.DEFAULT_DRIVER)
             self.status['turnip_driver_requested'] = version
-            client_vulkan.configure_environment(self.env, HERE, SESSION, PREFIX, version)
+            dxvk = request.get('dxvk_version', client_vulkan.DEFAULT_DXVK)
+            self.status['dxvk_requested'] = dxvk
+            client_vulkan.configure_environment(self.env, HERE, SESSION, PREFIX, version, dxvk)
             self.env['DXVK_HUD'] = 'devinfo,fps,compiler' if request.get('dxvk_hud', True) else '0'
             self.env['DXVK_CONFIG'] = self.status['dxvk_configuration'] = dxvk_configuration(request)
         else:
@@ -775,7 +851,8 @@ class Supervisor:
         self.update('checking_graphics')
         if self.request.get('renderer', 'turnip') == 'turnip':
             version = self.request.get('turnip_driver', client_vulkan.DEFAULT_DRIVER)
-            manifest, command = client_vulkan.prepare_probe(HERE, SESSION, PREFIX, self.env, version)
+            manifest, command = client_vulkan.prepare_probe(HERE, SESSION, PREFIX, self.env, version,
+                                                            self.request.get('dxvk_version', client_vulkan.DEFAULT_DXVK))
             process = self.spawn(command, 'x3-vulkan.log')
             deadline = time.monotonic() + 30
             while process.poll() is None:
@@ -861,7 +938,8 @@ class Supervisor:
             try: self.update(media_files=media_survey())
             except OSError as error: self.update(media_files={'error': str(error)})
         if self.request.get('renderer', 'turnip') == 'turnip':
-            self.update(dxvk_d3d9_sha256=client_vulkan.install_d3d9(HERE, PREFIX, GAME))
+            self.update(dxvk_d3d9_sha256=client_vulkan.install_d3d9(
+                HERE, PREFIX, GAME, self.request.get('dxvk_version', client_vulkan.DEFAULT_DXVK)))
         devices = PREFIX / 'dosdevices'; devices.mkdir(exist_ok=True)
         drive = devices / 'd:'
         if drive.is_symlink(): drive.unlink()
@@ -938,10 +1016,20 @@ class Supervisor:
         """
         prime = fastest_cpus() if self.request.get('cpu_affinity', 'prime') == 'prime' else set()
         if len(prime) >= (os.cpu_count() or 1) - 1: prime = set()
+        fastest = sorted(fastest_cpus())
+        clocks = ClockProfile(fastest[0] if fastest else None)
+        cap = self.request.get('display_fps', 60)
         ticks = repins = 0
         while not self.stopping():
             seen = self.wine_log.last_present_seen if self.wine_log else None
-            self.profile.sample('playing' if seen is not None and time.monotonic() - seen < 4 else 'loading')
+            if seen is not None and time.monotonic() - seen < 4:
+                band = frame_band(self.wine_log, cap)
+                self.profile.sample(*(('playing', 'below_cap') if band == 'below_cap' else ('playing',)))
+                if not ticks % 20:
+                    clocks.sample(band)
+                    self.status['clock_profile'] = clocks.report()
+            else:
+                self.profile.sample('loading')
             ticks += 1
             if prime and self.profile.pid and not ticks % 20:
                 try:

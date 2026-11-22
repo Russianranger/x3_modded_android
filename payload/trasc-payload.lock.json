@@ -19,6 +19,10 @@
     "dxvk": {
       "url": "https://github.com/doitsujin/dxvk/releases/download/v2.5.3/dxvk-2.5.3.tar.gz",
       "sha256": "d8e6ef7d1168095165e1f8a98c7d5a4485b080467bb573d2a9ef3e3d79ea1eb8"
+    },
+    "dxvk_3_1_1": {
+      "url": "https://github.com/doitsujin/dxvk/releases/download/v3.1.1/dxvk-3.1.1.tar.gz",
+      "sha256": "40565b4a724aadc4433fa4e010b4b23916d9b1f1baeee64e17186db94f54e608"
     }
   },
   "files": {
@@ -37,7 +41,9 @@
     "assets/payload/x11-frame-bridge": {"source": "trasc_apk", "member": "assets/x11-frame-bridge", "sha256": "c7244f755d9e473a6a8931cc7d330e6a7c2efd909313b5f0cf634558562b2917"},
     "assets/payload/presentation-bundle.json": {"source": "trasc_apk", "member": "assets/presentation-bundle.json", "sha256": "d67c2cea490d4448e5901daddd92682301bf6d6326a8bea512fde85ee1c26a74"},
     "assets/payload/presentation-notices.txt": {"source": "trasc_apk", "member": "assets/presentation-notices.txt", "sha256": "a9f1f28b99e94873059745ef6de2bafc74bd08b58a1629de25a2fb9806cf5666"},
-    "assets/payload/dxvk-d3d9-x64.dll": {"source": "dxvk", "member": "dxvk-2.5.3/x64/d3d9.dll", "sha256": "0429fe4e1083e0c65080be46dd90e91c34d6486f78dfbef6f90275e77ef8e600"}
+    "assets/payload/dxvk-d3d9-x64.dll": {"source": "dxvk", "member": "dxvk-2.5.3/x64/d3d9.dll", "sha256": "0429fe4e1083e0c65080be46dd90e91c34d6486f78dfbef6f90275e77ef8e600"},
+    "assets/payload/dxvk-3.1.1-d3d9.dll": {"source": "dxvk_3_1_1", "member": "dxvk-3.1.1/x32/d3d9.dll", "sha256": "265888c31ca78dffa290c39cb7e50bfb02762590e41927906e46fb32f01497fa"},
+    "assets/payload/dxvk-3.1.1-d3d9-x64.dll": {"source": "dxvk_3_1_1", "member": "dxvk-3.1.1/x64/d3d9.dll", "sha256": "c126316f7478eaff1ad8087702eda5930f2400187b9c8b3592219c34f6632780"}
   },
   "cross_checks": [
     {"source": "dxvk", "member": "dxvk-2.5.3/x32/d3d9.dll", "equals": "assets/payload/dxvk-d3d9.dll",

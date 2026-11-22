@@ -250,6 +250,7 @@ jobs:
           # Native surface: TRASC's prebuilt JNI library must ship with its frame bridge.
           unzip -l "$apk" | grep -q "lib/arm64-v8a/libtrasc-presentation.so"
           unzip -l "$apk" | grep -q "assets/payload/x11-frame-bridge"
+          unzip -l "$apk" | grep -q "assets/payload/dxvk-3.1.1-d3d9.dll"
       - name: Describe the build
         run: |
           apk=app/build/outputs/apk/debug/app-debug.apk

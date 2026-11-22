@@ -20,7 +20,7 @@ final class GameRuntime {
     private static final String[] RUNNER={"x3_runner.py","client_audio.py","client_vulkan.py","client_presentation.py","client_xauthority.py",
         "client_metrics.py","log_retention.py","runtime_probe.py","pe_info.py"};
     private static final String[] PAYLOAD={"libasound_module_pcm_trasc.so","audio-bundle.json","turnip.so","turnip-26.0.0.so","vulkan-probe",
-        "dxvk-d3d9.dll","dxvk-d3d9-x64.dll","vulkan-bundle.json","wineserver","wineserver-patch.json","x11-frame-bridge","presentation-bundle.json",
+        "dxvk-d3d9.dll","dxvk-d3d9-x64.dll","dxvk-3.1.1-d3d9.dll","dxvk-3.1.1-d3d9-x64.dll","vulkan-bundle.json","wineserver","wineserver-patch.json","x11-frame-bridge","presentation-bundle.json",
         "payload-provenance.json","box64","box64-build.json","x3pin.exe","wintools-build.json","amstream.dll","winegstreamer.dll","wine-dlls.json"};
     private static final String[] EXECUTABLE={"vulkan-probe","wineserver","x11-frame-bridge","box64"};
     final Context context;
@@ -100,13 +100,14 @@ final class GameRuntime {
             String resolution=options.optString("resolution","1280x720");
             if(!RESOLUTIONS.contains(resolution))throw new IOException("Unsupported resolution");
             String renderer=options.optString("renderer","turnip");
-            String presentation=options.optString("presentation_mode","rfb");
+            String presentation=options.optString("presentation_mode","native_surface");
             if(!presentation.equals("rfb")&&!presentation.equals("native_surface"))throw new IOException("Unsupported display path");
             JSONObject request=new JSONObject()
                 .put("mode",program.equalsIgnoreCase("X3AP.exe")?"game":"program").put("program",program)
                 .put("arguments",new JSONArray(splitArguments(options.optString("arguments",""))))
                 .put("resolution",resolution).put("renderer",renderer)
-                .put("turnip_driver",options.optString("turnip_driver","24.3.4"))
+                .put("turnip_driver",options.optString("turnip_driver","26.0.0"))
+                .put("dxvk_version",options.optString("dxvk_version","3.1.1"))
                 .put("presentation_mode",presentation).put("display_fps",options.optInt("display_fps",60))
                 .put("audio",options.optBoolean("audio",true)).put("dxvk_hud",options.optBoolean("dxvk_hud",true))
                 .put("cpu_profile",options.optString("cpu_profile","fast")).put("cpu_affinity","prime")

@@ -1,6 +1,7 @@
 # Adapted from trasc-server-android backend/client_vulkan.py (commit 99e8c86f).
 # X3 changes: EverQuest asset/NPC helpers removed; 64-bit DXVK install added (verified against
-# payload-provenance.json) for the case where X3AP.exe is a 64-bit build.
+# payload-provenance.json) for the case where X3AP.exe is a 64-bit build, and a choice of DXVK
+# version (2.5.3 from TRASC's bundle, or upstream 3.1.1 pinned in the X3 payload lock).
 """Pinned, APK-owned Turnip/DXVK selection, with explicit device verification."""
 import hashlib
 import json
@@ -13,6 +14,17 @@ DEFAULT_DRIVER = '24.3.4'
 DRIVERS = {'24.3.4': 'turnip.so', '26.0.0': 'turnip-26.0.0.so'}
 FILES = (*DRIVERS.values(), 'vulkan-probe', 'dxvk-d3d9.dll')
 X64_DLL = 'dxvk-d3d9-x64.dll'
+# DXVK version -> (32-bit d3d9.dll, 64-bit d3d9.dll) in the payload. 2.5.3's 32-bit DLL is TRASC's
+# bundled one (checked against vulkan-bundle.json); every other file is checked against
+# payload-provenance.json, which the build wrote after verifying the upstream release tarball.
+DXVK_VERSIONS = {'2.5.3': ('dxvk-d3d9.dll', X64_DLL), '3.1.1': ('dxvk-3.1.1-d3d9.dll', 'dxvk-3.1.1-d3d9-x64.dll')}
+DEFAULT_DXVK = '3.1.1'
+
+
+def dxvk_files(version):
+    if not isinstance(version, str) or version not in DXVK_VERSIONS:
+        raise ValueError('Unsupported DXVK version; choose ' + ' or '.join(DXVK_VERSIONS))
+    return DXVK_VERSIONS[version]
 
 
 def driver_file(version):
@@ -21,11 +33,13 @@ def driver_file(version):
     return DRIVERS[version]
 
 
-def cache_paths(prefix, version):
-    driver_file(version)
+def cache_paths(prefix, version, dxvk='2.5.3'):
+    """DXVK and Mesa shader caches per driver, and for DXVK per version (2.5.3 keeps its old folder)."""
+    driver_file(version); dxvk_files(dxvk)
     suffix = '' if version == DEFAULT_DRIVER else '-turnip-' + version
     mesa_suffix = '' if version == DEFAULT_DRIVER else '-' + version
-    return prefix/'x3-cache'/('dxvk'+suffix), prefix/'x3-cache'/('mesa-turnip'+mesa_suffix)
+    dxvk_name = 'dxvk' + ('' if dxvk == '2.5.3' else '-' + dxvk) + suffix
+    return prefix/'x3-cache'/dxvk_name, prefix/'x3-cache'/('mesa-turnip'+mesa_suffix)
 
 
 def verify_bundle(folder):
@@ -53,23 +67,25 @@ def verify_payload_file(folder, name):
     return expected
 
 
-def configure_environment(env, folder, session, prefix, version=DEFAULT_DRIVER):
+def configure_environment(env, folder, session, prefix, version=DEFAULT_DRIVER, dxvk='2.5.3'):
     # MESA_VK_WSI_DEBUG=sw selects CPU-copy X11 presentation, NOT a software GPU driver.
-    dxvk_cache, mesa_cache = cache_paths(prefix, version)
+    # DXVK 2.5.3 keeps a pipeline state cache (DXVK_STATE_CACHE_PATH); 3.x replaced it with a
+    # shader cache (DXVK_SHADER_CACHE_PATH). Both go to the same per-version folder.
+    dxvk_cache, mesa_cache = cache_paths(prefix, version, dxvk)
     env.update(VK_ICD_FILENAMES=str(session/'turnip-icd.json'),
                VK_DRIVER_FILES=str(session/'turnip-icd.json'), MESA_VK_WSI_DEBUG='sw',
                DXVK_LOG_LEVEL='info', DXVK_LOG_PATH='/logs', DXVK_HUD='devinfo,fps,compiler',
-               DXVK_STATE_CACHE_PATH=str(dxvk_cache),
+               DXVK_STATE_CACHE_PATH=str(dxvk_cache), DXVK_SHADER_CACHE_PATH=str(dxvk_cache),
                MESA_SHADER_CACHE_DIR=str(mesa_cache), mesa_glthread='false')
     env['WINEDLLOVERRIDES'] += ';d3d9=n'
 
 
-def prepare_probe(folder, session, prefix, env, version=DEFAULT_DRIVER):
+def prepare_probe(folder, session, prefix, env, version=DEFAULT_DRIVER, dxvk='2.5.3'):
     filename = driver_file(version)
     manifest = verify_bundle(folder)
     (session/'turnip-icd.json').write_text(json.dumps({'file_format_version':'1.0.0', 'ICD':{
         'library_path':str(folder/filename), 'api_version':'1.3.0'}}))
-    for path in cache_paths(prefix, version): path.mkdir(parents=True, exist_ok=True)
+    for path in cache_paths(prefix, version, dxvk): path.mkdir(parents=True, exist_ok=True)
     return manifest, [str(folder/'vulkan-probe')]
 
 
@@ -103,15 +119,20 @@ def _install(source, expected, target, backup):
     return expected
 
 
-def install_d3d9(folder, prefix, game):
-    """Install DXVK's d3d9 for 32-bit (syswow64) and, when shipped, 64-bit (system32) programs."""
+def install_d3d9(folder, prefix, game, dxvk='2.5.3'):
+    """Install DXVK's d3d9 for 32-bit (syswow64) and, when shipped, 64-bit (system32) programs.
+
+    The chosen version replaces whatever DXVK the prefix had; Wine's own d3d9 is kept once in
+    x3-renderers for the Software graphics option."""
+    x86, x64 = dxvk_files(dxvk)
     # A d3d9.dll beside the game would shadow ours (Windows loads the application folder first).
     if any(p.name.lower() == 'd3d9.dll' for p in game.iterdir()):
         raise RuntimeError('The game folder contains d3d9.dll, which would override bundled DXVK. Remove it or choose Software graphics.')
     manifest = verify_bundle(folder)
-    result = {'x86': _install(folder/'dxvk-d3d9.dll', manifest['files']['dxvk-d3d9.dll'],
-                              prefix/'drive_c/windows/syswow64/d3d9.dll', prefix/'x3-renderers/wine-d3d9-x86.dll')}
-    if (folder/X64_DLL).exists():
-        result['x86_64'] = _install(folder/X64_DLL, verify_payload_file(folder, X64_DLL),
+    expected = manifest['files'][x86] if x86 in manifest['files'] else verify_payload_file(folder, x86)
+    result = {'version': dxvk,
+              'x86': _install(folder/x86, expected, prefix/'drive_c/windows/syswow64/d3d9.dll', prefix/'x3-renderers/wine-d3d9-x86.dll')}
+    if (folder/x64).exists():
+        result['x86_64'] = _install(folder/x64, verify_payload_file(folder, x64),
                                     prefix/'drive_c/windows/system32/d3d9.dll', prefix/'x3-renderers/wine-d3d9-x64.dll')
     return result

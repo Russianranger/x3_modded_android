@@ -47,6 +47,7 @@ public final class GameActivity extends Activity {
         StringBuilder text=new StringBuilder(phase);
         if(launch!=null){
             if(launch.has("renderer"))text.append("\n").append(launch.optString("renderer"));
+            if(launch.has("dxvk_loaded"))text.append(" · DXVK ").append(launch.optString("dxvk_loaded"));
             text.append(nativeActive?" · native surface":" · RFB");
             if(launch.has("presentation_fallback"))text.append(" (native surface unavailable: ").append(launch.optString("presentation_fallback")).append(")");
             if(nativeActive&&nativeDisplay!=null)try{

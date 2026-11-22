@@ -25,7 +25,7 @@ public final class MainActivity extends Activity {
     private GameRuntime runtime;
     private SharedPreferences prefs;
     private TextView statusView,runtimeView,gameView;
-    private Spinner program,resolution,renderer,turnip,fps,presentation,cpu;
+    private Spinner program,resolution,renderer,turnip,dxvk,fps,presentation,cpu;
     private EditText arguments;
     private CheckBox audio,hud,diagnostics,soundDiagnostics,skipArchives,passthrough;
     private Button mediaButton;private JSONObject mediaManifest;
@@ -76,6 +76,8 @@ public final class MainActivity extends Activity {
         label(launchCard,"Resolution");resolution=spinner(launchCard,GameRuntime.RESOLUTIONS);
         label(launchCard,"Graphics");renderer=spinner(launchCard,Arrays.asList("Turnip + DXVK (Adreno GPU)","Software (WineD3D, slow)"));
         label(launchCard,"Turnip driver");turnip=spinner(launchCard,Arrays.asList("24.3.4","26.0.0"));
+        label(launchCard,"DXVK (3.1.1: less CPU work per Direct3D 9 call; back to 2.5.3 if X3 will not start or draws wrongly)");
+        dxvk=spinner(launchCard,Arrays.asList("3.1.1","2.5.3"));
         label(launchCard,"Display updates per second");fps=spinner(launchCard,Arrays.asList("60","30"));
         label(launchCard,"Display path (native surface: frames straight to the screen, the X server no longer encodes them; experimental)");
         presentation=spinner(launchCard,Arrays.asList("RFB","Native surface"));
@@ -88,7 +90,8 @@ public final class MainActivity extends Activity {
         passthrough=check(launchCard,"Let X3 also read the gamepad itself (XInput). Off: only the app's layered controls reach the game",
             prefs.getBoolean("controller_passthrough",false));
         select(resolution,prefs.getString("resolution","1280x720"));select(renderer,prefs.getString("renderer_label","Turnip + DXVK (Adreno GPU)"));
-        select(turnip,prefs.getString("turnip_driver","24.3.4"));select(fps,prefs.getString("display_fps","60"));select(presentation,prefs.getString("presentation","RFB"));select(cpu,prefs.getString("cpu_profile_v3","fast"));
+        select(turnip,prefs.getString("turnip_driver","26.0.0"));select(dxvk,prefs.getString("dxvk_version","3.1.1"));
+        select(fps,prefs.getString("display_fps","60"));select(presentation,prefs.getString("presentation","Native surface"));select(cpu,prefs.getString("cpu_profile_v3","fast"));
         LinearLayout launchRow=row(launchCard);
         button(launchRow,"Launch",v->launch());
         button(launchRow,"Show game",v->{if(runtime.alive())startActivity(new Intent(this,GameActivity.class));else Toast.makeText(this,"The game is not running",Toast.LENGTH_SHORT).show();});
@@ -152,7 +155,8 @@ public final class MainActivity extends Activity {
             options.put("program",String.valueOf(program.getSelectedItem())).put("arguments",arguments.getText().toString())
                 .put("resolution",String.valueOf(resolution.getSelectedItem()))
                 .put("renderer",renderer.getSelectedItemPosition()==0?"turnip":"software")
-                .put("turnip_driver",String.valueOf(turnip.getSelectedItem())).put("display_fps",Integer.parseInt(String.valueOf(fps.getSelectedItem())))
+                .put("turnip_driver",String.valueOf(turnip.getSelectedItem())).put("dxvk_version",String.valueOf(dxvk.getSelectedItem()))
+                .put("display_fps",Integer.parseInt(String.valueOf(fps.getSelectedItem())))
                 .put("presentation_mode",presentation.getSelectedItemPosition()==1?"native_surface":"rfb")
                 .put("cpu_profile",String.valueOf(cpu.getSelectedItem())).put("audio",audio.isChecked()).put("dxvk_hud",hud.isChecked())
                 .put("diagnostic_logging",diagnostics.isChecked()).put("sound_diagnostics",soundDiagnostics.isChecked())
@@ -168,7 +172,8 @@ public final class MainActivity extends Activity {
         if(program==null)return;
         prefs.edit().putString("program",String.valueOf(program.getSelectedItem())).putString("arguments",arguments.getText().toString())
             .putString("resolution",String.valueOf(resolution.getSelectedItem())).putString("renderer_label",String.valueOf(renderer.getSelectedItem()))
-            .putString("turnip_driver",String.valueOf(turnip.getSelectedItem())).putString("display_fps",String.valueOf(fps.getSelectedItem()))
+            .putString("turnip_driver",String.valueOf(turnip.getSelectedItem())).putString("dxvk_version",String.valueOf(dxvk.getSelectedItem()))
+            .putString("display_fps",String.valueOf(fps.getSelectedItem()))
             .putString("presentation",String.valueOf(presentation.getSelectedItem()))
             .putString("cpu_profile_v3",String.valueOf(cpu.getSelectedItem())).putBoolean("audio",audio.isChecked()).putBoolean("dxvk_hud",hud.isChecked())
             .putBoolean("diagnostic_logging",diagnostics.isChecked()).putBoolean("sound_diagnostics",soundDiagnostics.isChecked())

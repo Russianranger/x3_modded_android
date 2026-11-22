@@ -24,7 +24,7 @@ PRoot rootfs (TRASC client runtime)
 
 **Copied from TRASC:**
 
-- **Payload:** PRoot, the patched wineserver, Turnip 24.3.4 and 26.0.0, DXVK d3d9, the `pcm_trasc`
+- **Payload:** PRoot, the patched wineserver, Turnip 24.3.4 and 26.0.0, DXVK d3d9 2.5.3 (3.1.1 comes from upstream), the `pcm_trasc`
   ALSA plugin and the frame/input bridge. Each file is pinned by hash in
   `payload/trasc-payload.lock.json`.
 - **Java:** the RFB client, controller engine and audio bridge.
@@ -63,8 +63,9 @@ PRoot rootfs (TRASC client runtime)
      whether the exe is Large Address Aware.
 4. Launch the game:
    - Pick `X3AP.exe` and a resolution, then tap **Launch**.
-   - The defaults are Turnip 24.3.4, the **fast** CPU profile, `-skipintro` and a 1280×720
-     Wine desktop.
+   - The defaults are Turnip 26.0.0, DXVK 3.1.1, the native surface display path, the **fast**
+     CPU profile, `-skipintro` and a 1280×720 Wine desktop (since 0.1.13; a choice you saved
+     before is kept).
    - The first launch creates the Wine prefix, so it takes longer than later ones.
    - **CPU emulation** sets Box64's code translator for X3AP.exe only:
      - **fast** (default since 0.1.11): bigger translated blocks that also cover Windows code,
@@ -79,12 +80,18 @@ PRoot rootfs (TRASC client runtime)
      0.1.7 hang looked like.
    - The in-game status line shows **last load N s**: the last stretch without a frame, taken from
      Wine's present trace. It's the number to compare between profiles.
-   - **Display path:** **RFB** (default) has the X server encode every frame for the app over
-     its socket. **Native surface** (experimental, 0.1.12) has TRASC's `x11-frame-bridge` copy
+   - **DXVK** (0.1.13): **3.1.1** (default) or **2.5.3**, the version every run up to 0.1.12
+     used. DXVK 3 spends less CPU per Direct3D 9 call, and on the Thor that CPU time is X3's
+     main thread, which is what holds the frame rate below 60. 3.1.1 needs a Vulkan 1.3 driver
+     with `maintenance5`/`maintenance6`; Turnip 26.0.0 is a Vulkan 1.4 driver. If DXVK cannot use
+     the driver, the launch stops and says to pick DXVK 2.5.3 (or Turnip 26.0.0). Each version
+     keeps its own shader cache, so the first flight on 3.1.1 compiles shaders again.
+   - **Display path:** **Native surface** (default since 0.1.13; experimental in 0.1.12) has TRASC's `x11-frame-bridge` copy
      frames from the X server through shared memory straight to an Android surface. The RFB
      connection then carries keys and pointer only, and the app falls back to RFB frames if the
      surface stops. TRASC measured 59.7 frames/s delivered on the Thor this way against 40.7 for
-     RFB at 60. The status line shows which path is active.
+     RFB at 60. **RFB** has the X server encode every frame for the app over its socket. The
+     status line shows which path is active.
    - **CPU placement** (automatic since 0.1.12): X3's main thread runs on the fastest core (the
      Thor's Cortex-X3, CPU 7), and every other thread of the launch runs on the other cores.
      Android's cpuset still decides: when it leaves CPU 7 out, the main thread gets whatever is
@@ -684,3 +691,41 @@ before: 146 s, median 32).
 - `dynacache_at_launch` and `dynacache` (each minute): Box64's cache folder, files and bytes.
 - Display path option: native surface (TRASC's frame bridge and its pinned
   `libtrasc-presentation.so`).
+
+### 21 November 2026, AYN Thor, build 0.1.12 (native surface; then also Turnip 26.0.0)
+
+**What worked:** both runs were faster than 0.1.11 (143 s, 42 fps):
+
+| | Load | Median fps | 75th / 90th percentile |
+|---|---:|---:|---:|
+| Native surface, Turnip 24.3.4 | 98.5 s | 44 | |
+| Native surface, Turnip 26.0.0 | 94.8 s | 50 | 59 / 60 |
+
+- Prime placement held: the main thread stayed on CPU 7 (5 re-pins in the run).
+- Box64's DynaCache works: 240 files, 69 MB, `X3AP.exe` and `d3d9.dll` among them.
+
+**Where the time goes now:**
+
+- X3's main thread was busy 83% of the playing time, and 85-94% in the 42-48 fps stretches.
+  Most of its sleep was in `futex` (9%), which includes waiting at the 60 fps cap.
+- Other threads: DXVK's command thread 8-16% of a core, the swapchain thread 3% (31% on
+  RFB), the X server 12-16%, the frame bridge 8%. DirectSound's mixer used 15-48%: it
+  resamples every voice to 48 kHz with a 66-tap filter, in emulated x86 code. These all run on
+  other cores.
+- The game rendered at 1280×720, so the GPU is unlikely to be the limit. The run could not
+  show it either way.
+- So 60 fps in busy scenes needs about a quarter less work on the main thread per frame. That
+  work is X3's own code plus DXVK's Direct3D 9 front end, both translated by Box64.
+- **Comms faces:** neither run played a face clip. The face stream opened, paused and
+  stopped with 0 frames and 0 updates, so there is nothing to compare yet.
+
+**Changes in 0.1.13:**
+
+- DXVK 3.1.1 option (default), pinned by SHA-256 from the upstream release. 2.5.3 stays
+  available. The frame cap goes in `dxvk.maxFrameRate` for 3.x. The state gains
+  `dxvk_requested`, `dxvk_loaded` and `dxvk_binding_model`.
+- New defaults: Turnip 26.0.0 and the native surface.
+- `main_thread_profile.below_cap`: the playing samples taken while Wine reported more than 3 fps
+  under the cap.
+- `clock_profile`: once a second while playing, at the cap and below it, CPU 7's clock and
+  limit and, when Android allows it, kgsl's GPU busy share and clock.

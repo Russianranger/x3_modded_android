@@ -197,11 +197,39 @@ class FirstDeviceRunTests(unittest.TestCase):
     def test_dxvk_stays_off_fifo_unless_vsync_is_requested(self):
         # Third Thor run (0.1.3): FIFO + vkWaitForPresentKHR never returned -> black screen.
         default = x3_runner.dxvk_configuration({"display_fps": 60})
-        self.assertEqual(default, "d3d9.presentInterval = 0; d3d9.maxFrameRate = 60")
-        self.assertEqual(x3_runner.dxvk_configuration({"display_fps": 30, "vsync": True}), "d3d9.maxFrameRate = 30")
+        self.assertEqual(default, "d3d9.presentInterval = 0; dxvk.maxFrameRate = 60")
+        old = x3_runner.dxvk_configuration({"display_fps": 60, "dxvk_version": "2.5.3"})
+        self.assertEqual(old, "d3d9.presentInterval = 0; d3d9.maxFrameRate = 60")
+        self.assertEqual(x3_runner.dxvk_configuration({"display_fps": 30, "vsync": True}), "dxvk.maxFrameRate = 30")
         request = dict(mode="game", program="X3AP.exe", resolution="1280x720", vsync="yes")
         with self.assertRaisesRegex(ValueError, "vsync"):
             x3_runner.validate_request(request)
+
+    def test_dxvk_version_is_checked_and_reported(self):
+        request = dict(mode="game", program="X3AP.exe", resolution="1280x720", dxvk_version="9.9")
+        with self.assertRaisesRegex(ValueError, "DXVK version"):
+            x3_runner.validate_request(request)
+        log = x3_runner.WineLog(Path(tempfile.gettempdir()) / "unused.log", game=True)
+        log.observe(b"info:  DXVK: v3.1.1\ninfo:  Binding model: Descriptor buffer\n")
+        self.assertEqual(log.snapshot()[0]["dxvk_loaded"], "3.1.1")
+        self.assertEqual(log.snapshot()[0]["dxvk_binding_model"], "Descriptor buffer")
+
+    def test_a_driver_dxvk_cannot_use_stops_the_launch_with_advice(self):
+        log = "err:   DxvkAdapter: Device does not support required feature 'shaderInt64'\n"
+        self.assertIn("lacks shaderInt64", x3_runner.fatal_launch_error(log, game=True))
+        self.assertIn("DXVK 2.5.3", x3_runner.fatal_launch_error("warn:  DXVK: No adapters found. Please check\n"))
+
+    def test_dxvk_versions_install_their_own_files_and_caches(self):
+        import client_vulkan
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.assertEqual(client_vulkan.cache_paths(root, "24.3.4")[0].name, "dxvk")
+            self.assertEqual(client_vulkan.cache_paths(root, "26.0.0", "3.1.1")[0].name, "dxvk-3.1.1-turnip-26.0.0")
+            env = {"WINEDLLOVERRIDES": ""}
+            client_vulkan.configure_environment(env, root, root, root, "26.0.0", "3.1.1")
+            self.assertEqual(env["DXVK_SHADER_CACHE_PATH"], str(root / "x3-cache" / "dxvk-3.1.1-turnip-26.0.0"))
+            with self.assertRaisesRegex(ValueError, "DXVK version"):
+                client_vulkan.dxvk_files("2.7")
 
     def test_present_mode_is_recorded(self):
         log = x3_runner.WineLog(Path(tempfile.gettempdir()) / "unused.log", game=True)
@@ -482,6 +510,52 @@ class MainThreadProfileTests(unittest.TestCase):
             self.assertEqual(report["loading"]["traced"], 0.25)
             self.assertEqual(report["loading"]["syscalls"], {"traced:openat": 0.25, "sleeping:read": 0.25})
             self.assertEqual(report["playing"], {"samples": 1, "running": 1.0, "syscalls": {}})
+
+    def test_samples_below_the_frame_cap_are_also_counted_apart(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            profile = x3_runner.MainThreadProfile(proc=root)
+            profile.pid = 4242
+            self.task(root, "S", "98 0x1")
+            profile.sample("playing", "below_cap")
+            self.task(root, "R", "running")
+            profile.sample("playing")
+            report = profile.report()
+            self.assertEqual(report["playing"]["samples"], 2)
+            self.assertEqual(report["below_cap"], {"samples": 1, "sleeping": 1.0, "syscalls": {"sleeping:futex": 1.0}})
+
+    def test_frame_band_follows_wines_fps_reports(self):
+        log = x3_runner.WineLog(Path(tempfile.gettempdir()) / "unused.log", game=True)
+        self.assertEqual(x3_runner.frame_band(log, 60), "unknown")
+        log.fields["wine_present"] = {"per_second": 45.0, "sampled_at": 1000.0}
+        self.assertEqual(x3_runner.frame_band(log, 60, now=1001.0), "below_cap")
+        log.fields["wine_present"] = {"per_second": 59.5, "sampled_at": 1000.0}
+        self.assertEqual(x3_runner.frame_band(log, 60, now=1001.0), "at_cap")
+        self.assertEqual(x3_runner.frame_band(log, 60, now=1010.0), "unknown")
+
+    def test_clock_profile_reads_cpu_and_gpu_clocks(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            freq = root / "cpu" / "cpu7" / "cpufreq"; freq.mkdir(parents=True)
+            (freq / "cpuinfo_max_freq").write_text("3360000\n")
+            (freq / "scaling_max_freq").write_text("3360000\n")
+            kgsl = root / "kgsl"; (kgsl / "devfreq").mkdir(parents=True)
+            clocks = x3_runner.ClockProfile(7, cpus=root / "cpu", kgsl=kgsl)
+            (freq / "scaling_cur_freq").write_text("3360000\n")
+            clocks.sample("below_cap")
+            self.assertFalse(clocks.report()["gpu_readable"])   # Android hid kgsl: only the CPU is known
+            (freq / "scaling_cur_freq").write_text("2400000\n")
+            (kgsl / "gpu_busy_percentage").write_text("37 %\n")
+            (kgsl / "devfreq" / "cur_freq").write_text("680000000\n")
+            clocks.sample("below_cap")
+            report = clocks.report()
+            self.assertEqual(report["cpu"], "cpu7")
+            self.assertEqual(report["cpu_max_mhz"], 3360)
+            self.assertTrue(report["gpu_readable"])
+            self.assertEqual(report["below_cap"]["samples"], 2)
+            self.assertEqual(report["below_cap"]["cpu_mhz"], {"mean": 2880, "min": 2400, "max": 3360})
+            self.assertEqual(report["below_cap"]["gpu_busy_percent"], {"mean": 37, "min": 37, "max": 37})
+            self.assertEqual(report["below_cap"]["gpu_mhz"], {"mean": 680, "min": 680, "max": 680})
 
     def test_a_thread_that_went_away_is_skipped(self):
         with tempfile.TemporaryDirectory() as folder:
