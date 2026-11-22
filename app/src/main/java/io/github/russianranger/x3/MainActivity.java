@@ -76,8 +76,8 @@ public final class MainActivity extends Activity {
         label(launchCard,"Resolution");resolution=spinner(launchCard,GameRuntime.RESOLUTIONS);
         label(launchCard,"Graphics");renderer=spinner(launchCard,Arrays.asList("Turnip + DXVK (Adreno GPU)","Software (WineD3D, slow)"));
         label(launchCard,"Turnip driver");turnip=spinner(launchCard,Arrays.asList("24.3.4","26.0.0"));
-        label(launchCard,"DXVK (3.1.1: less CPU work per Direct3D 9 call; back to 2.5.3 if X3 will not start or draws wrongly)");
-        dxvk=spinner(launchCard,Arrays.asList("3.1.1","2.5.3"));
+        label(launchCard,"DXVK (2.5.3 is the default; 3.1.1 is an experiment: it crashed X3 on the Thor in 0.1.13, and now logs where)");
+        dxvk=spinner(launchCard,Arrays.asList("2.5.3","3.1.1"));
         label(launchCard,"Display updates per second");fps=spinner(launchCard,Arrays.asList("60","30"));
         label(launchCard,"Display path (native surface: frames straight to the screen, the X server no longer encodes them; experimental)");
         presentation=spinner(launchCard,Arrays.asList("RFB","Native surface"));
@@ -90,7 +90,7 @@ public final class MainActivity extends Activity {
         passthrough=check(launchCard,"Let X3 also read the gamepad itself (XInput). Off: only the app's layered controls reach the game",
             prefs.getBoolean("controller_passthrough",false));
         select(resolution,prefs.getString("resolution","1280x720"));select(renderer,prefs.getString("renderer_label","Turnip + DXVK (Adreno GPU)"));
-        select(turnip,prefs.getString("turnip_driver","26.0.0"));select(dxvk,prefs.getString("dxvk_version","3.1.1"));
+        select(turnip,prefs.getString("turnip_driver","26.0.0"));select(dxvk,prefs.getString("dxvk_version_v2","2.5.3"));
         select(fps,prefs.getString("display_fps","60"));select(presentation,prefs.getString("presentation","Native surface"));select(cpu,prefs.getString("cpu_profile_v3","fast"));
         LinearLayout launchRow=row(launchCard);
         button(launchRow,"Launch",v->launch());
@@ -172,7 +172,7 @@ public final class MainActivity extends Activity {
         if(program==null)return;
         prefs.edit().putString("program",String.valueOf(program.getSelectedItem())).putString("arguments",arguments.getText().toString())
             .putString("resolution",String.valueOf(resolution.getSelectedItem())).putString("renderer_label",String.valueOf(renderer.getSelectedItem()))
-            .putString("turnip_driver",String.valueOf(turnip.getSelectedItem())).putString("dxvk_version",String.valueOf(dxvk.getSelectedItem()))
+            .putString("turnip_driver",String.valueOf(turnip.getSelectedItem())).putString("dxvk_version_v2",String.valueOf(dxvk.getSelectedItem()))
             .putString("display_fps",String.valueOf(fps.getSelectedItem()))
             .putString("presentation",String.valueOf(presentation.getSelectedItem()))
             .putString("cpu_profile_v3",String.valueOf(cpu.getSelectedItem())).putBoolean("audio",audio.isChecked()).putBoolean("dxvk_hud",hud.isChecked())

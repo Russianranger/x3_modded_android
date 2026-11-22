@@ -1,0 +1,253 @@
+From: X3 Modded <noreply@github.com>
+Subject: [PATCH] winegstreamer: Time untimed MPEG-1 video from its GOP time codes.
+
+X3: Albion Prelude keeps every comms face in one MPEG-1 movie, mov/00001.dat, whose video
+packets carry no time stamps: on the Thor every frame came out of GStreamer untimed. After a
+seek the MPEG video decoder numbered the frames from the new segment's start, so it could not
+drop what came before the target, and showed the 1.5 s that patch 0007 seeks early by: the end
+of the previous face, or another face, nearly every time X3 moved within a call.
+
+MPEG-1 video carries its own clock: a GOP header holds the time code of the GOP's first picture
+and each picture header its place in display order. For an MPEG-1 splitter video pin that has
+never had a time stamp, time each frame from those, relative to the movie's first time code.
+Time codes are used only while the first one after a seek lies within 2 s of where the seek
+went and each later one follows from the pictures of the GOP before it. Once one does not (or
+for drop-frame time codes), the frames stay untimed, and parser_seek_start() seeks such a
+stream straight to the target from then on rather than early.
+---
+diff --git a/dlls/winegstreamer/quartz_parser.c b/dlls/winegstreamer/quartz_parser.c
+index 0a59688..ba6f994 100644
+--- a/dlls/winegstreamer/quartz_parser.c
++++ b/dlls/winegstreamer/quartz_parser.c
+@@ -105,6 +105,18 @@ struct parser_source
+ 
+     bool interpolate_timestamps;
+     UINT64 prev_end_pts;
++
++    /* MPEG-1 video whose packets carry no time stamps, timed from its GOP time codes instead
++     * (see mpeg1_frame_time()). */
++    LONGLONG seek_start;            /* where the GStreamer seek for the current segment went */
++    bool seen_pts, seen_untimed;    /* this pin has had buffers with, and without, time stamps */
++    bool use_timecodes;             /* time this segment's frames from their GOP time codes */
++    bool timecode_checked;          /* the segment's first GOP time code has been checked */
++    bool gop_valid;                 /* the current GOP's time code can be used */
++    int timecode_trust;             /* 1 once a time code matched a seek, -1 once one did not */
++    LONGLONG gop_frame;             /* frame number of the current GOP's first picture */
++    unsigned int gop_pictures;      /* pictures since the current GOP's header */
++    LONGLONG first_frame;           /* frame number of the movie's first GOP, or -1 */
+ };
+ 
+ static inline struct parser *impl_from_strmbase_filter(struct strmbase_filter *iface)
+@@ -1164,10 +1176,125 @@ static uint64_t scale_uint64(uint64_t value, uint32_t numerator, uint32_t denomi
+     return ((high.QuadPart / denominator) << 32) + (low.QuadPart / denominator);
+ }
+ 
++static bool is_mpeg1_video(struct parser_source *pin)
++{
++    struct parser *filter = impl_from_strmbase_filter(pin->pin.pin.filter);
++
++    return IsEqualGUID(&filter->filter.clsid, &CLSID_MPEG1Splitter)
++            && IsEqualGUID(&pin->pin.pin.mt.formattype, &FORMAT_MPEGVideo)
++            && pin->pin.pin.mt.cbFormat >= sizeof(MPEG1VIDEOINFO);
++}
++
++static LONGLONG llabs_frames(LONGLONG frames)
++{
++    return frames < 0 ? -frames : frames;
++}
++
++/* Frames to stream time, at the movie's frame rate; time codes count whole frames per second. */
++static REFERENCE_TIME mpeg1_frames_time(LONGLONG frames, LONGLONG frame_time, LONGLONG rate)
++{
++    LONGLONG error = rate * frame_time - 10000000;
++
++    if (error < rate && error > -rate)
++        return frames * 10000000 / rate;
++    return frames * frame_time;
++}
++
++/* X3: Albion Prelude's comms face movie, mov/00001.dat, is an MPEG-1 program stream whose video
++ * packets carry no time stamps, so after a seek its frames came out untimed. The MPEG video
++ * decoder then numbered them from the new segment's start and showed the 1.5 s before the
++ * target that parser_seek_start() asks for: the end of the previous face, or another face.
++ * MPEG-1 video has its own clock: every GOP header holds the time code of the GOP's first
++ * picture, and every picture header its place in display order. Time the frames from those.
++ * A time code is used only when the first one after a seek lands where the seek went, and
++ * relative to the movie's first time code; if one does not, the stream is left untimed and
++ * parser_seek_start() stops seeking early for it. */
++static bool mpeg1_frame_time(struct parser_source *pin, const BYTE *data, uint32_t size,
++        REFERENCE_TIME *time, REFERENCE_TIME *length)
++{
++    struct parser *filter = impl_from_strmbase_filter(pin->pin.pin.filter);
++    const MPEG1VIDEOINFO *format = (const MPEG1VIDEOINFO *)pin->pin.pin.mt.pbFormat;
++    LONGLONG frame_time = format->hdr.AvgTimePerFrame, rate, frame;
++    uint32_t i, limit = min(size, 2048);
++    int gop = -1, picture = -1;
++
++    if (frame_time <= 0 || (rate = (10000000 + frame_time / 2) / frame_time) < 1 || rate > 60)
++        return false;
++
++    for (i = 0; i + 8 <= limit; ++i)
++    {
++        if (data[i] || data[i + 1] || data[i + 2] != 1)
++            continue;
++        if (data[i + 3] == 0xb8 && gop < 0)
++            gop = i;
++        else if (data[i + 3] == 0x00)
++        {
++            picture = i;
++            break;
++        }
++    }
++    if (picture < 0)
++        return false;
++
++    if (gop >= 0)
++    {
++        const BYTE *code = data + gop + 4;
++        unsigned int hours = (code[0] >> 2) & 0x1f, minutes = ((code[0] & 3) << 4) | (code[1] >> 4);
++        unsigned int seconds = ((code[1] & 7) << 3) | (code[2] >> 5), pictures = ((code[2] & 0x1f) << 1) | (code[3] >> 7);
++        REFERENCE_TIME start;
++
++        /* Drop-frame time codes skip numbers; leave those to the decoder. */
++        if ((code[0] & 0x80) || !(code[1] & 0x08) || minutes > 59 || seconds > 59 || pictures >= rate)
++        {
++            pin->gop_valid = false;
++            return false;
++        }
++        frame = ((hours * 60 + minutes) * 60 + seconds) * rate + pictures;
++        if (pin->first_frame < 0 && pin->seek_start == 0 && !pin->timecode_checked)
++            pin->first_frame = frame;
++        start = mpeg1_frames_time(frame - max(pin->first_frame, 0), frame_time, rate);
++
++        if (!pin->timecode_checked)
++        {
++            /* Where the seek went, give or take the demuxer's landing error and a GOP. */
++            pin->timecode_checked = true;
++            pin->gop_valid = start >= pin->seek_start - 20000000 && start <= pin->seek.llCurrent + 20000000;
++            if (pin->use_timecodes)
++                TRACE_(x3media)("parser %p pin %p: first GOP at %s, for a seek to %s from %s: %s.\n",
++                        filter, pin, debugstr_time(start), debugstr_time(pin->seek.llCurrent),
++                        debugstr_time(pin->seek_start), pin->gop_valid ? "timing frames from it" : "leaving frames untimed");
++        }
++        else if (pin->gop_valid && llabs_frames(frame - (pin->gop_frame + pin->gop_pictures)) > 1)
++        {
++            /* Each GOP's time code must follow from the pictures of the GOP before it. */
++            TRACE_(x3media)("parser %p pin %p: GOP time code %s after %u pictures from %s; frames untimed from here.\n",
++                    filter, pin, debugstr_time(start), pin->gop_pictures,
++                    debugstr_time(mpeg1_frames_time(pin->gop_frame - max(pin->first_frame, 0), frame_time, rate)));
++            pin->gop_valid = false;
++            pin->timecode_trust = -1;
++        }
++        if (pin->use_timecodes && !pin->gop_valid)
++            pin->timecode_trust = -1;
++        else if (pin->use_timecodes && !pin->timecode_trust)
++            pin->timecode_trust = 1;
++        pin->gop_frame = frame;
++        pin->gop_pictures = 0;
++    }
++    ++pin->gop_pictures;
++
++    if (!pin->use_timecodes || !pin->gop_valid)
++        return false;
++    frame = pin->gop_frame - max(pin->first_frame, 0) + ((data[picture + 4] << 2) | (data[picture + 5] >> 6));
++    *time = mpeg1_frames_time(frame, frame_time, rate);
++    *length = mpeg1_frames_time(frame + 1, frame_time, rate) - *time;
++    return true;
++}
++
+ /* Fill and send a single IMediaSample. */
+ static HRESULT send_sample(struct parser_source *pin, IMediaSample *sample,
+         const struct wg_parser_buffer *buffer, uint32_t offset, uint32_t size, DWORD bytes_per_second)
+ {
++    REFERENCE_TIME code_start, code_length;
+     HRESULT hr;
+     BYTE *ptr = NULL;
+ 
+@@ -1187,7 +1314,23 @@ static HRESULT send_sample(struct parser_source *pin, IMediaSample *sample,
+         return S_OK;
+     }
+ 
+-    if (buffer->has_pts || (pin->interpolate_timestamps && pin->prev_end_pts != 0))
++    if (is_mpeg1_video(pin))
++    {
++        if (buffer->has_pts)
++            pin->seen_pts = true, pin->use_timecodes = false;
++        else
++            pin->seen_untimed = true;
++    }
++
++    if (!buffer->has_pts && !offset && is_mpeg1_video(pin) && mpeg1_frame_time(pin, ptr, size, &code_start, &code_length))
++    {
++        REFERENCE_TIME start_reftime = (code_start - pin->seek.llCurrent) * pin->seek.dRate;
++        REFERENCE_TIME end_reftime = start_reftime + code_length * pin->seek.dRate;
++
++        IMediaSample_SetTime(sample, &start_reftime, &end_reftime);
++        IMediaSample_SetMediaTime(sample, &start_reftime, &end_reftime);
++    }
++    else if (buffer->has_pts || (pin->interpolate_timestamps && pin->prev_end_pts != 0))
+     {
+         UINT64 start_pts = (buffer->has_pts ? buffer->pts : pin->prev_end_pts);
+         REFERENCE_TIME start_reftime = start_pts;
+@@ -1261,6 +1404,11 @@ static void send_buffer(struct parser_source *pin, const struct wg_parser_buffer
+         TRACE_(x3media)("parser %p pin %p new segment from %s.\n",
+                 impl_from_strmbase_filter(pin->pin.pin.filter), pin, debugstr_time(pin->seek.llCurrent));
+         pin->log_samples = 3;
++        /* Time codes only for a stream that has never had a time stamp: mixing the two would
++         * reorder frames if the demuxer's time base differs from the time codes'. */
++        pin->use_timecodes = pin->seen_untimed && !pin->seen_pts && pin->timecode_trust >= 0;
++        pin->timecode_checked = pin->gop_valid = false;
++        pin->gop_pictures = 0;
+         if (FAILED(hr = IPin_NewSegment(pin->pin.pin.peer,
+                 pin->seek.llCurrent, pin->seek.llStop, pin->seek.dRate)))
+             WARN("Failed to deliver new segment, hr %#lx.\n", hr);
+@@ -1476,7 +1624,7 @@ static void parser_destroy(struct strmbase_filter *iface)
+  * a little earlier instead (1.5 seconds: a GOP and the landing error); samples keep their times
+  * relative to the target, and the MPEG video decoder decodes but drops the frames before it.
+  * Only when video is all that plays: an audio decoder would play what came before the target. */
+-static LONGLONG parser_seek_start(struct parser *filter, struct parser_source *pin, LONGLONG target)
++static LONGLONG parser_seek_start_for(struct parser *filter, struct parser_source *pin, LONGLONG target)
+ {
+     unsigned int i;
+ 
+@@ -1488,11 +1636,29 @@ static LONGLONG parser_seek_start(struct parser *filter, struct parser_source *p
+         if (filter->sources[i] != pin && filter->sources[i]->pin.pin.peer)
+             return target;
+     }
++    /* Without time stamps or usable time codes the decoder cannot tell what came before the
++     * target: seek straight to it (see mpeg1_frame_time()). */
++    if (!pin->seen_pts && pin->seen_untimed && pin->timecode_trust < 0)
++    {
++        TRACE_(x3media)("parser %p seeks untimed video straight to %s.\n", filter, debugstr_time(target));
++        return target;
++    }
+     TRACE_(x3media)("parser %p seeks video to %s for a target of %s.\n", filter,
+             debugstr_time(max(target - 15000000, 0)), debugstr_time(target));
+     return max(target - 15000000, 0);
+ }
+ 
++static LONGLONG parser_seek_start(struct parser *filter, struct parser_source *pin, LONGLONG target)
++{
++    LONGLONG start = parser_seek_start_for(filter, pin, target);
++    unsigned int i;
++
++    /* One GStreamer seek moves every stream. */
++    for (i = 0; i < filter->source_count; ++i)
++        filter->sources[i]->seek_start = start;
++    return start;
++}
++
+ static HRESULT parser_init_stream(struct strmbase_filter *iface)
+ {
+     struct parser *filter = impl_from_strmbase_filter(iface);
+@@ -2256,6 +2422,7 @@ static struct parser_source *create_pin(struct parser *filter,
+         return NULL;
+ 
+     pin->wg_stream = stream;
++    pin->first_frame = -1;
+     strmbase_source_init(&pin->pin, &filter->filter, name, &source_ops);
+     pin->IQualityControl_iface.lpVtbl = &GSTOutPin_QualityControl_Vtbl;
+     strmbase_seeking_init(&pin->seek, &GST_Seeking_Vtbl, GST_ChangeStop,
+-- 
+2.43.0
+

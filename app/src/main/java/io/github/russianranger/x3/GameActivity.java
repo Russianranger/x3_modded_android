@@ -61,6 +61,7 @@ public final class GameActivity extends Activity {
             if(pauses!=null&&pauses.length()>0)   // a pause in presenting = a loading screen
                 text.append(String.format(java.util.Locale.ROOT," · last load %.0f s",pauses.optDouble(pauses.length()-1)));
             if(launch.has("warning"))text.append("\n").append(launch.optString("warning"));
+            if(launch.has("performance_hint"))text.append("\n").append(launch.optString("performance_hint"));
         }
         text.append("\nLayer ").append(controller.layerLabel());
         status.setText(text);

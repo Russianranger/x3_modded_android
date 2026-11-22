@@ -18,7 +18,7 @@ X64_DLL = 'dxvk-d3d9-x64.dll'
 # bundled one (checked against vulkan-bundle.json); every other file is checked against
 # payload-provenance.json, which the build wrote after verifying the upstream release tarball.
 DXVK_VERSIONS = {'2.5.3': ('dxvk-d3d9.dll', X64_DLL), '3.1.1': ('dxvk-3.1.1-d3d9.dll', 'dxvk-3.1.1-d3d9-x64.dll')}
-DEFAULT_DXVK = '3.1.1'
+DEFAULT_DXVK = '2.5.3'   # 3.1.1 crashed in vkCreateGraphicsPipelines on the Thor (0.1.13)
 
 
 def dxvk_files(version):

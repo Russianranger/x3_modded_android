@@ -63,9 +63,12 @@ PRoot rootfs (TRASC client runtime)
      whether the exe is Large Address Aware.
 4. Launch the game:
    - Pick `X3AP.exe` and a resolution, then tap **Launch**.
-   - The defaults are Turnip 26.0.0, DXVK 3.1.1, the native surface display path, the **fast**
-     CPU profile, `-skipintro` and a 1280×720 Wine desktop (since 0.1.13; a choice you saved
+   - The defaults are Turnip 26.0.0, DXVK 2.5.3, the native surface display path, the **fast**
+     CPU profile, `-skipintro` and a 1280×720 Wine desktop (since 0.1.14; a choice you saved
      before is kept).
+   - Set the Thor to **High Performance** (pull the quick settings down twice). In Standard mode
+     the fastest core was held at 2477 of its 3187 MHz, and X3 is limited by that one core. The
+     status line says so when the core runs capped.
    - The first launch creates the Wine prefix, so it takes longer than later ones.
    - **CPU emulation** sets Box64's code translator for X3AP.exe only:
      - **fast** (default since 0.1.11): bigger translated blocks that also cover Windows code,
@@ -80,12 +83,12 @@ PRoot rootfs (TRASC client runtime)
      0.1.7 hang looked like.
    - The in-game status line shows **last load N s**: the last stretch without a frame, taken from
      Wine's present trace. It's the number to compare between profiles.
-   - **DXVK** (0.1.13): **3.1.1** (default) or **2.5.3**, the version every run up to 0.1.12
-     used. DXVK 3 spends less CPU per Direct3D 9 call, and on the Thor that CPU time is X3's
-     main thread, which is what holds the frame rate below 60. 3.1.1 needs a Vulkan 1.3 driver
-     with `maintenance5`/`maintenance6`; Turnip 26.0.0 is a Vulkan 1.4 driver. If DXVK cannot use
-     the driver, the launch stops and says to pick DXVK 2.5.3 (or Turnip 26.0.0). Each version
-     keeps its own shader cache, so the first flight on 3.1.1 compiles shaders again.
+   - **DXVK** (0.1.13): **2.5.3** (default again since 0.1.14) or **3.1.1** (experiment). DXVK 3
+     spends less CPU per Direct3D 9 call, and on the Thor that CPU time is X3's main thread. But
+     in 0.1.13, 3.1.1 crashed X3 inside `vkCreateGraphicsPipelines` soon after the menu
+     appeared. With 3.1.1 chosen, Box64 now logs any fault in X3 with native and emulated
+     backtraces, and the launch stops with a message naming the Vulkan call. Each version keeps
+     its own shader cache.
    - **Display path:** **Native surface** (default since 0.1.13; experimental in 0.1.12) has TRASC's `x11-frame-bridge` copy
      frames from the X server through shared memory straight to an Android surface. The RFB
      connection then carries keys and pointer only, and the app falls back to RFB frames if the
@@ -94,8 +97,8 @@ PRoot rootfs (TRASC client runtime)
      status line shows which path is active.
    - **CPU placement** (automatic since 0.1.12): X3's main thread runs on the fastest core (the
      Thor's Cortex-X3, CPU 7), and every other thread of the launch runs on the other cores.
-     Android's cpuset still decides: when it leaves CPU 7 out, the main thread gets whatever is
-     allowed.
+     Android still decides: when it leaves CPU 7 out, the main thread goes to the other big cores
+     (CPUs 3-6, since 0.1.14), not the 2 GHz little ones.
 5. In X3's own settings, turn **EAX off**. Pick a resolution that matches the Wine desktop.
 
 ### Saves and settings
@@ -208,6 +211,15 @@ filters (`winegstreamer.dll`). `patches/wine/` holds fixes for both, found on th
   samples X3 sets up, and the first frames and updates after each segment, flush or state
   change, then counts: a few lines per comms call. The comms face problems never showed up in a
   run with media traces, and those traces are far too heavy to leave on.
+- **0009, winegstreamer:** X3's face movie has no time stamps in its video packets, so on the
+  Thor every face frame came out of GStreamer untimed (0.1.13's logs). 0007's early seek then
+  backfired: the decoder could not tell the 1.5 s before the target from the target, and showed
+  it, so most of every call showed the end of the previous face or another one. MPEG-1 video
+  has its own clock: the time code in each GOP header and each picture's place in display
+  order. The splitter now times untimed MPEG-1 video from those, relative to the movie's first
+  time code, while they check out: the first after a seek must lie within 2 s of where the seek
+  went, and each later one must follow from the pictures of the GOP before it. If they do not,
+  the stream stays untimed and is sought straight to the target from then on.
 
 **Building and testing:** CI builds both DLLs (PE side only; `winegstreamer.dll` keeps using the
 runtime's own `winegstreamer.so` from the same source) from the `wine-10.0` tag. It then runs, on
@@ -233,8 +245,11 @@ the runtime's exact Wine build (Kron4ek 10.0 WoW64) with GStreamer, stock DLLs a
     clip, the first one at the target time, and no update may stall. Stock Wine loses two frames
     in three, then stalls after the first seek; 0.1.10's DLLs showed the wrong clip after every
     stopped seek.
+  - the same movie with the time stamps taken out of its video packets
+    (`tests/media/strip_pes_timestamps.py`), as X3's is. 0.1.13's DLLs showed another clip in
+    110 of 120 frames, stock Wine in 39; with 0009, none.
 
-  All five must pass with the patched DLLs.
+  All six must pass with the patched DLLs.
 
 The app binds both DLLs over the runtime's copies, and the runner checks their hashes
 (`wine_patches` in `x3-state.json`).
@@ -729,3 +744,37 @@ before: 146 s, median 32).
   under the cap.
 - `clock_profile`: once a second while playing, at the cap and below it, CPU 7's clock and
   limit and, when Android allows it, kgsl's GPU busy share and clock.
+
+### 21 November 2026, AYN Thor, build 0.1.13 (DXVK 3.1.1, then 2.5.3)
+
+**What happened:**
+
+- **DXVK 3.1.1 crashed X3** about 8 s after the menu appeared. The device came up without
+  complaint: Vulkan 1.3 features all present, legacy binding model, IMMEDIATE present. Then
+  DXVK's command thread hit `assert(!status && "vkCreateGraphicsPipelines")` in winevulkan.
+  That means a fault inside the call: in Wine's 32-to-64-bit conversion, Box64's Vulkan bridge
+  or Turnip's shader compiler. The log cannot say which. That run used the **fastest** CPU
+  profile, which drops Box64's x86 memory ordering, and DXVK 3's new multithreaded code may
+  depend on it.
+- **The comms faces were wrong, and now we know why.** This run played faces: 391 frames
+  over several calls. Every frame of X3's face movie arrived untimed: its video packets carry no
+  time stamps. So after each of X3's seeks the decoder could not drop the 1.5 s that 0007
+  seeks early by, and showed them. The same thing happens with the test movie once its time
+  stamps are stripped: another clip in 110 of 120 frames.
+- **The fastest core was capped.** CPU 7's limit stayed at 2477 MHz for the whole run, against
+  its 3187 MHz maximum, and it averaged about 2100 MHz. The GPU ran at its lowest step
+  (401 MHz) and was about 40% busy, so it is not the limit.
+- **Android left CPU 7 out about a quarter of the time,** and X3's main thread then ran on any
+  core, the little ones included.
+- **Start-of-game stutter:** after the 153 s load, presenting stopped for 12 s, 5 s and 9 s.
+  X3's main thread was busy throughout and its memory was growing, so this is X3 loading
+  the sector, slowed by the capped core. 0.1.12's runs had pauses of the same size.
+
+**Changes in 0.1.14:**
+
+- Patch 0009: untimed MPEG-1 video timed from its GOP time codes (see above), and a new
+  x3media scenario with a movie without time stamps.
+- DXVK 2.5.3 is the default again. With 3.1.1, Box64 reports faults with backtraces
+  (`BOX64_SHOWSEGV`, `BOX64_SHOWBT`), and a winevulkan assert stops the launch with a message.
+- The main thread falls back to the big cores (`big_cpus`, `main_thread_big_core_fallbacks`).
+- `performance_hint` on the status line when the prime core is held below 92% of its top clock.

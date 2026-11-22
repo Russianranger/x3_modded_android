@@ -32,6 +32,7 @@ SCENARIOS = [
     ("speech (WMA 2 in ASF)", ["audio", "speech-wma2.dat", "44100", "2"], "fail"),
     ("unpositioned mono at 22 kHz into a 44.1 kHz stereo stream", ["audio", "speech-22k-mono-unpositioned.wav", "44100", "2"], "fail"),
     ("comms faces (seeking in one MPEG-1 movie)", ["seek", "faces-clips.mpg", "8"], "fail"),
+    ("comms faces in a movie without time stamps, as X3's is", ["seek", "faces-clips-untimed.mpg", "8"], "fail"),
 ]
 
 

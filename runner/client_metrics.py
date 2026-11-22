@@ -151,6 +151,24 @@ def fastest_cpus(cpus=Path('/sys/devices/system/cpu')):
     return {cpu for cpu, capacity in found.items() if capacity == top}
 
 
+def fast_cpus(cpus=Path('/sys/devices/system/cpu')):
+    """X3 addition: the big cores, the main thread's place when Android leaves out the prime one.
+
+    On the Thor CPU 7 dropped out of the app's CPUs a quarter of the time in the fourteenth run,
+    and X3's main thread then ran anywhere, the 2 GHz Cortex-A510s included. Big means at least
+    half the top scheduler capacity or, without capacities, three quarters of the top clock."""
+    found = {}
+    for source, share in (('cpu_capacity', 0.5), ('cpufreq/cpuinfo_max_freq', 0.75)):
+        for path in sorted(cpus.glob('cpu[0-9]*')):
+            if not path.name[3:].isdecimal(): continue
+            try: found[int(path.name[3:])] = int((path/source).read_text().split()[0])
+            except (OSError, ValueError, IndexError): continue
+        if found:
+            top = max(found.values())
+            return {cpu for cpu, value in found.items() if value >= share * top}
+    return set()
+
+
 def place_game_threads(sample, launch_token, proc=Path('/proc'), cpus=Path('/sys/devices/system/cpu'),
                        game_name='x3ap.exe', getaffinity=os.sched_getaffinity, setaffinity=os.sched_setaffinity):
     """X3 replacement for allow_game_cpus: the game's main thread on the fastest core, every other
@@ -160,11 +178,13 @@ def place_game_threads(sample, launch_token, proc=Path('/proc'), cpus=Path('/sys
     the Thor Android changes that mask every few seconds (0-5, 0-6, 0-4,6-7, 0-7 in one run):
     X3's main thread spent much of each load off CPU 7. Masks asked for here are cut down by the
     kernel to what Android's cpuset allows at the time, so this never goes beyond Android's policy;
-    when the prime core is not allowed at all, the main thread gets whatever is.
+    when the prime core is not allowed at all, the main thread gets the other big cores (0.1.14),
+    and whatever is allowed if none of those are.
     Same launch-marker, owner and thread start checks as allow_game_cpus.
     """
     prime = fastest_cpus(cpus)
     every = set(range(os.cpu_count() or 1))
+    big = fast_cpus(cpus) or every
     rest = every - prime
     result = {'prime_cpus': sorted(prime), 'main_thread_cpus': None, 'changed_threads': 0, 'errors': 0}
     if not prime or len(rest) < 2: return result
@@ -189,7 +209,9 @@ def place_game_threads(sample, launch_token, proc=Path('/proc'), cpus=Path('/sys
             if main:
                 if current != prime:
                     try: setaffinity(tid, prime)
-                    except OSError: setaffinity(tid, every)     # prime core not allowed now
+                    except OSError:                              # prime core not allowed now
+                        try: setaffinity(tid, big)
+                        except OSError: setaffinity(tid, every)
                     result['changed_threads'] += 1
                 result['main_thread_cpus'] = sorted(getaffinity(tid))
             elif current & prime:

@@ -32,7 +32,7 @@ import client_audio
 import client_presentation
 import client_vulkan
 import pe_info
-from client_metrics import LAUNCH_ENV, process_threads, allow_game_cpus, place_game_threads, fastest_cpus
+from client_metrics import LAUNCH_ENV, process_threads, allow_game_cpus, place_game_threads, fastest_cpus, fast_cpus
 from client_xauthority import write_xauthority
 
 HERE = Path(__file__).resolve().parent
@@ -145,10 +145,10 @@ PRESENT_PAUSE = 5.0        # seconds without a Vulkan present that count as a lo
 SPIN_SAMPLES = 6           # 10 s samples of a busy game main thread with no kernel work: stuck
 
 
-def box64_rc(game, profile=DEFAULT_CPU_PROFILE):
+def box64_rc(game, profile=DEFAULT_CPU_PROFILE, extra=None):
     """Box64 rc text: real CPU count for Wine, the chosen profile for the game's process."""
     game = re.sub(r'[^A-Za-z0-9._-]', '', game) or 'X3AP.exe'
-    settings = ''.join(f'{key}={value}\n' for key, value in CPU_PROFILES[profile].items())
+    settings = ''.join(f'{key}={value}\n' for key, value in {**CPU_PROFILES[profile], **(extra or {})}.items())
     return ('[wine]\nBOX64_MAXCPU=0\n[wine64]\nBOX64_MAXCPU=0\n'
             '[explorer.exe]\nBOX64_DYNAREC_BIGBLOCK=0\n'
             f'[{game}]\n{settings}')
@@ -364,6 +364,10 @@ def fatal_launch_error(log, game=False):
                 detail = ': Box64 cannot run the x86 instruction ' + opcode[-1].strip()
             return ('The game crashed (unhandled ' + crash[1].lower() + location + detail + '). '
                     'Export Logs and check x3-wine.log.')
+    pipeline = re.search(r'err:msvcrt:_wassert \(L"!status && \\?"(vk\w+)\\?""', log)
+    if pipeline:
+        return ('The Vulkan driver crashed in ' + pipeline[1] + ' (DXVK ' + (re.findall(r'DXVK: v(\d+\.\d+(?:\.\d+)?)', log) or ['?'])[-1]
+                + '). Choose DXVK 2.5.3 and launch again; export Logs to report it.')
     dxvk = re.search(r"Device does not support required feature '(\w+)'|DXVK: No adapters found", log)
     if dxvk:
         return ('DXVK could not use the Vulkan driver' + (' (it lacks ' + dxvk[1] + ')' if dxvk[1] else '')
@@ -377,6 +381,20 @@ def fatal_launch_error(log, game=False):
             return 'A required Windows library could not load: ' + missing[-1][:350] + '. Export Logs for details.'
         return 'Windows program initialization failed. Export Logs (x3-wine.log) for the failing module.'
     return None
+
+
+def clock_hint(report):
+    """A line for the status when the prime core runs held below its top clock.
+
+    Fourteenth Thor run: CPU 7 was limited to 2477 of its 3187 MHz for the whole run, the kind of
+    cap a power mode sets. AYN's handhelds have Standard, Performance and High Performance modes
+    in their quick settings."""
+    top = report.get('cpu_max_mhz')
+    limits = [band['cpu_limit_mhz']['max'] for name, band in report.items()
+              if isinstance(band, dict) and 'cpu_limit_mhz' in band]
+    if not top or not limits or max(limits) >= 0.92 * top: return None
+    return ('%s is held at %d of its %d MHz (power mode or heat). On the Thor, High Performance mode '
+            'in the quick settings lifts it.' % (report.get('cpu') or 'The fastest core', max(limits), top))
 
 
 def frame_band(wine_log, cap, now=None):
@@ -746,12 +764,17 @@ class Supervisor:
     def configure_cpu(self):
         # Box64's stock [wine] section forces 64 CPUs; a private rc file keeps the real count.
         profile = self.request.get('cpu_profile', DEFAULT_CPU_PROFILE)
-        (SESSION / 'box64.rc').write_text(box64_rc(self.game_name, profile))
-        self.status['game_box64'] = dict(CPU_PROFILES[profile])
+        # DXVK 3.1.1 crashed the fourteenth Thor run inside vkCreateGraphicsPipelines, with no
+        # trace of where. While it is chosen, Box64 reports the fault and both backtraces.
+        extra = ({'BOX64_SHOWSEGV': '1', 'BOX64_SHOWBT': '1'}
+                 if self.request.get('renderer', 'turnip') == 'turnip'
+                 and self.request.get('dxvk_version', client_vulkan.DEFAULT_DXVK) != '2.5.3' else {})
+        (SESSION / 'box64.rc').write_text(box64_rc(self.game_name, profile, extra))
+        self.status['game_box64'] = {**CPU_PROFILES[profile], **extra}
         try: affinity = sorted(os.sched_getaffinity(0))
         except (AttributeError, OSError): affinity = []
         self.update(cpu_settings={k: v for k, v in self.env.items() if k.startswith('BOX64_')}, available_cpu_ids=affinity,
-                    android_cpuset=android_cpuset(), prime_cpus=sorted(fastest_cpus()),
+                    android_cpuset=android_cpuset(), prime_cpus=sorted(fastest_cpus()), big_cpus=sorted(fast_cpus()),
                     dynacache_at_launch=dynacache_summary())
 
     @contextmanager
@@ -1016,6 +1039,8 @@ class Supervisor:
         """
         prime = fastest_cpus() if self.request.get('cpu_affinity', 'prime') == 'prime' else set()
         if len(prime) >= (os.cpu_count() or 1) - 1: prime = set()
+        big = fast_cpus() or set(range(os.cpu_count() or 1))
+        fallbacks = 0
         fastest = sorted(fastest_cpus())
         clocks = ClockProfile(fastest[0] if fastest else None)
         cap = self.request.get('display_fps', 60)
@@ -1027,17 +1052,28 @@ class Supervisor:
                 self.profile.sample(*(('playing', 'below_cap') if band == 'below_cap' else ('playing',)))
                 if not ticks % 20:
                     clocks.sample(band)
-                    self.status['clock_profile'] = clocks.report()
+                    self.status['clock_profile'] = report = clocks.report()
+                    hint = clock_hint(report)
+                    if hint: self.status['performance_hint'] = hint
             else:
                 self.profile.sample('loading')
             ticks += 1
             if prime and self.profile.pid and not ticks % 20:
                 try:
-                    if set(os.sched_getaffinity(self.profile.pid)) != prime:
-                        os.sched_setaffinity(self.profile.pid, prime)
-                        repins += 1
-                        self.status['main_thread_repins'] = repins
-                except OSError: pass   # gone, or the prime core is not in Android's cpuset now
+                    current = set(os.sched_getaffinity(self.profile.pid))
+                    if current != prime:
+                        try:
+                            os.sched_setaffinity(self.profile.pid, prime)
+                            repins += 1
+                            self.status['main_thread_repins'] = repins
+                        except OSError:
+                            # The prime core is not in Android's CPUs now: the other big cores,
+                            # not the little ones (the kernel trims the mask to what is allowed).
+                            if not current <= big:
+                                os.sched_setaffinity(self.profile.pid, big)
+                                fallbacks += 1
+                                self.status['main_thread_big_core_fallbacks'] = fallbacks
+                except OSError: pass   # gone
             time.sleep(0.05)
 
     def watch_spin(self, sample, seconds):

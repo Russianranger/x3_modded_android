@@ -197,10 +197,10 @@ class FirstDeviceRunTests(unittest.TestCase):
     def test_dxvk_stays_off_fifo_unless_vsync_is_requested(self):
         # Third Thor run (0.1.3): FIFO + vkWaitForPresentKHR never returned -> black screen.
         default = x3_runner.dxvk_configuration({"display_fps": 60})
-        self.assertEqual(default, "d3d9.presentInterval = 0; dxvk.maxFrameRate = 60")
-        old = x3_runner.dxvk_configuration({"display_fps": 60, "dxvk_version": "2.5.3"})
-        self.assertEqual(old, "d3d9.presentInterval = 0; d3d9.maxFrameRate = 60")
-        self.assertEqual(x3_runner.dxvk_configuration({"display_fps": 30, "vsync": True}), "dxvk.maxFrameRate = 30")
+        self.assertEqual(default, "d3d9.presentInterval = 0; d3d9.maxFrameRate = 60")
+        new = x3_runner.dxvk_configuration({"display_fps": 60, "dxvk_version": "3.1.1"})
+        self.assertEqual(new, "d3d9.presentInterval = 0; dxvk.maxFrameRate = 60")
+        self.assertEqual(x3_runner.dxvk_configuration({"display_fps": 30, "vsync": True}), "d3d9.maxFrameRate = 30")
         request = dict(mode="game", program="X3AP.exe", resolution="1280x720", vsync="yes")
         with self.assertRaisesRegex(ValueError, "vsync"):
             x3_runner.validate_request(request)
@@ -218,6 +218,21 @@ class FirstDeviceRunTests(unittest.TestCase):
         log = "err:   DxvkAdapter: Device does not support required feature 'shaderInt64'\n"
         self.assertIn("lacks shaderInt64", x3_runner.fatal_launch_error(log, game=True))
         self.assertIn("DXVK 2.5.3", x3_runner.fatal_launch_error("warn:  DXVK: No adapters found. Please check\n"))
+
+    def test_a_vulkan_driver_crash_names_the_call_and_the_way_back(self):
+        log = ('info:  DXVK: v3.1.1\n'
+               '27316.755:0140:0198:err:msvcrt:_wassert (L"!status && \\"vkCreateGraphicsPipelines\\"",'
+               'L"/home/runner/build_wine/wine/dlls/winevulkan/loader_thunks.c",3154)\n')
+        message = x3_runner.fatal_launch_error(log, game=True)
+        self.assertIn("vkCreateGraphicsPipelines (DXVK 3.1.1)", message)
+        self.assertIn("DXVK 2.5.3", message)
+
+    def test_box64_reports_faults_while_dxvk_3_is_tried(self):
+        rc = x3_runner.box64_rc("X3AP.exe", "fast", {"BOX64_SHOWSEGV": "1", "BOX64_SHOWBT": "1"})
+        section = rc.split("[X3AP.exe]\n", 1)[1]
+        self.assertIn("BOX64_SHOWSEGV=1\n", section)
+        self.assertIn("BOX64_DYNAREC_STRONGMEM=1\n", section)
+        self.assertNotIn("SHOWSEGV", x3_runner.box64_rc("X3AP.exe", "fast"))
 
     def test_dxvk_versions_install_their_own_files_and_caches(self):
         import client_vulkan
@@ -452,6 +467,32 @@ class PrimePlacementTests(unittest.TestCase):
             self.assertEqual(result["main_thread_cpus"], [0, 1, 2, 3, 4, 5])
             self.assertEqual(result["errors"], 0)
 
+    def test_without_the_prime_core_the_main_thread_stays_on_big_cores(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            cpus = root / "sys"
+            self.topology(cpus, {0: 325, 1: 325, 2: 325, 3: 870, 4: 870, 5: 870, 6: 870, 7: 1024})
+            self.assertEqual(client_metrics.fast_cpus(cpus), {3, 4, 5, 6, 7})
+            sample = self.launch(root / "proc", "tok", [(10, 10, "X3AP.exe")])
+            masks = {10: set(range(8))}       # a cpuset change resets the mask to everything
+            def setaffinity(tid, mask):
+                allowed = set(mask) & {0, 1, 2, 3, 4, 5, 6}   # Android left CPU 7 out
+                if not allowed: raise OSError(22, "Invalid argument")
+                masks[tid] = allowed
+            with unittest.mock.patch("os.cpu_count", return_value=8):
+                result = client_metrics.place_game_threads(sample, "tok", proc=root / "proc", cpus=cpus,
+                                                          getaffinity=lambda tid: masks[tid], setaffinity=setaffinity)
+            self.assertEqual(result["main_thread_cpus"], [3, 4, 5, 6])
+
+    def test_big_cores_by_clock_when_there_are_no_capacities(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for cpu, khz in {0: 2016000, 1: 2016000, 2: 2016000, 3: 2803200, 4: 2803200, 5: 2803200, 6: 2803200, 7: 3187200}.items():
+                (root / f"cpu{cpu}" / "cpufreq").mkdir(parents=True)
+                (root / f"cpu{cpu}" / "cpufreq" / "cpuinfo_max_freq").write_text(f"{khz}\n")
+            self.assertEqual(client_metrics.fast_cpus(root), {3, 4, 5, 6, 7})
+            self.assertEqual(client_metrics.fast_cpus(root / "missing"), set())
+
     def test_other_launches_are_not_touched(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -556,6 +597,15 @@ class MainThreadProfileTests(unittest.TestCase):
             self.assertEqual(report["below_cap"]["cpu_mhz"], {"mean": 2880, "min": 2400, "max": 3360})
             self.assertEqual(report["below_cap"]["gpu_busy_percent"], {"mean": 37, "min": 37, "max": 37})
             self.assertEqual(report["below_cap"]["gpu_mhz"], {"mean": 680, "min": 680, "max": 680})
+
+    def test_a_capped_prime_core_gives_a_performance_hint(self):
+        capped = {"cpu": "cpu7", "cpu_max_mhz": 3187, "gpu_readable": True,
+                  "below_cap": {"samples": 42, "cpu_limit_mhz": {"mean": 2477, "min": 2477, "max": 2477}}}
+        self.assertIn("2477 of its 3187 MHz", x3_runner.clock_hint(capped))
+        self.assertIn("High Performance", x3_runner.clock_hint(capped))
+        free = {"cpu": "cpu7", "cpu_max_mhz": 3187, "at_cap": {"samples": 9, "cpu_limit_mhz": {"mean": 3187, "min": 3187, "max": 3187}}}
+        self.assertIsNone(x3_runner.clock_hint(free))
+        self.assertIsNone(x3_runner.clock_hint({"cpu": None, "cpu_max_mhz": None}))
 
     def test_a_thread_that_went_away_is_skipped(self):
         with tempfile.TemporaryDirectory() as folder:

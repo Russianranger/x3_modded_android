@@ -107,7 +107,7 @@ final class GameRuntime {
                 .put("arguments",new JSONArray(splitArguments(options.optString("arguments",""))))
                 .put("resolution",resolution).put("renderer",renderer)
                 .put("turnip_driver",options.optString("turnip_driver","26.0.0"))
-                .put("dxvk_version",options.optString("dxvk_version","3.1.1"))
+                .put("dxvk_version",options.optString("dxvk_version","2.5.3"))
                 .put("presentation_mode",presentation).put("display_fps",options.optInt("display_fps",60))
                 .put("audio",options.optBoolean("audio",true)).put("dxvk_hud",options.optBoolean("dxvk_hud",true))
                 .put("cpu_profile",options.optString("cpu_profile","fast")).put("cpu_affinity","prime")
